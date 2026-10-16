@@ -1338,6 +1338,7 @@ TG_INTERNAL bool tg_addr_to_mem(tgProc *p, tyg_addr a, tgMem *out) {
 			tg_fail(p, "invalid symbol");
 			return false;
 		}
+		tg_alias_take_tls(p->m, (i32)a.base);
 		if (p->m->symbols.data[a.base].flags & tgSymbolFlag_TLS) {
 			m = tg_tls_mem(p, a.base);
 			m = tg_mem_offset(m, a.offset);

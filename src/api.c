@@ -305,10 +305,8 @@ TG_INTERNAL bool tg_resolve_aliases(tgModule *m) {
 	for (isize i = 0; i < m->symbols.count; i++) {
 		tgSymbol *s = &m->symbols.data[i];
 		if (s->alias_of == 0) continue;
-		tgSymbol const *t = s;
-		isize hops = 0;
-		while (t->alias_of != 0 && hops++ <= m->symbols.count) t = &m->symbols.data[t->alias_of - 1];
-		if (t->alias_of != 0 || t->section == tgSection_Undef) {
+		tgSymbol const *t = tg_alias_target(m, (i32)i);
+		if (t == NULL || t->section == tgSection_Undef) {
 			tg_set_error(m, "the alias %s has no defined target", s->name.text);
 			return false;
 		}

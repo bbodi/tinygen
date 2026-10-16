@@ -54,6 +54,8 @@ int tg_sec_fn(int x);
 #ifdef __linux__
 // the linker's bounds of the section tg_code
 extern char __start_tg_code[], __stop_tg_code[];
+extern _Thread_local int tg_tls_c;
+int tg_tls_alias_bump(void);
 #endif
 
 long long tg_ext_value = 1234;
@@ -122,6 +124,7 @@ int main(void) {
 #endif
 #ifdef __linux__
 	CHECK((char *)tg_sec_fn >= __start_tg_code && (char *)tg_sec_fn < __stop_tg_code);
+	CHECK(tg_tls_alias_bump() == 6 && tg_tls_alias_bump() == 7 && tg_tls_c == 7);
 #endif
 	struct Node n = {0};
 	n.color = GREEN;

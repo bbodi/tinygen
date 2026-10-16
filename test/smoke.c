@@ -442,6 +442,23 @@ static void build_tls(void) {
 	check(tyg_proc_end(p));
 }
 
+// ELF only: _Thread_local int tg_tls_c = 5; tg_tls_c_alias is an alias of it, made before
+// tg_tls_c is defined.
+// int tg_tls_alias_bump(void) { return ++tg_tls_c_alias; }
+static void build_tls_alias(void) {
+	static const int init = 5;
+	tyg_sym c = tyg_symbol(m, "tg_tls_c", TYG_SYM_GLOBAL);
+	tyg_sym ca = tyg_symbol(m, "tg_tls_c_alias", TYG_SYM_GLOBAL);
+	check(tyg_alias(m, ca, c));
+	check(tyg_data(m, c, TYG_SECTION_TDATA, &init, 4, 4));
+	tyg_sig *sig = tyg_sig_new(m, i32t(), NULL, 0, 0);
+	tyg_proc *p = tyg_proc_begin(m, tyg_symbol(m, "tg_tls_alias_bump", TYG_SYM_FUNC | TYG_SYM_GLOBAL), sig);
+	tyg_val v = tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I32, tyg_at_sym(ca, 0), 0), tyg_iconst(p, TYG_I32, 1));
+	tyg_store(p, TYG_I32, tyg_at_sym(ca, 0), v, 0);
+	tyg_ret(p, v);
+	check(tyg_proc_end(p));
+}
+
 // extern long long tg_ext_value; -- defined by smoke_main.c, reached as foreign data (__imp_ on Windows)
 // long long tg_read_ext(void) { return tg_ext_value; }
 // int tg_weak_answer(void) { return 7; } -- a weak definition
@@ -819,6 +836,7 @@ int main(int argc, char **argv) {
 	build_bigalloca();
 	build_tls();
 	build_ext_weak();
+	if (is_elf) build_tls_alias();
 	if (!windows) build_protected();
 	if (!windows) build_in_section();
 	build_node_sum();

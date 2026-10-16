@@ -54,6 +54,27 @@ TG_INTERNAL void tg_sym_set_realign(tgModule *m, i32 sym, i64 realign) {
 	m->symbols.data[sym].realign = realign;
 }
 
+// The symbol at the end of sym's chain of aliases, sym itself when it is no alias, or NULL
+// when the chain is a cycle.
+TG_INTERNAL tgSymbol *tg_alias_target(tgModule *m, i32 sym) {
+	tgSymbol *t = &m->symbols.data[sym];
+	isize hops = 0;
+	while (t->alias_of != 0 && hops++ <= m->symbols.count) t = &m->symbols.data[t->alias_of - 1];
+	return t->alias_of != 0 ? NULL : t;
+}
+
+// An alias of a thread local is one too. A use of the alias takes that over from the target,
+// since the code that reaches the alias depends on it before the object is written.
+TG_INTERNAL void tg_alias_take_tls(tgModule *m, i32 sym) {
+	tgSymbol *s = &m->symbols.data[sym];
+	if (s->alias_of == 0) return;
+	tgSymbol const *t = tg_alias_target(m, sym);
+	if (t != NULL && (t->flags & tgSymbolFlag_TLS)) {
+		s->flags |= tgSymbolFlag_TLS;
+		s->realign = t->realign;
+	}
+}
+
 // Places the symbol in a data section.
 TG_INTERNAL void tg_sym_define(tgModule *m, i32 sym, tgSection section, i64 offset, i64 size) {
 	tgSymbol *s = &m->symbols.data[sym];
