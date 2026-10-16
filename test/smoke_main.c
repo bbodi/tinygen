@@ -39,6 +39,7 @@ long long tg_bigalloca(long long n);
 int tg_tls_bump(void);
 long long tg_read_ext(void);
 int tg_weak_answer(void);
+extern void *tg_weak_ptr;
 long long tg_node_sum(struct Node *n, Point p);
 long long tg_copy_fwd(struct Q *q, struct Q s);
 long long tg_q_diff(struct Q q) { return q.a - q.b; }
@@ -56,6 +57,7 @@ extern char __start_tg_code[], __stop_tg_code[];
 #endif
 
 long long tg_ext_value = 1234;
+int tg_weak_target = 99;
 #if defined(__MINGW32__)
 // tg_read_ext reads it through __imp_tg_ext_value: link and lld make that pointer for a local
 // definition (LNK4217), GNU ld does not
@@ -112,6 +114,7 @@ int main(void) {
 	CHECK(tg_tls_bump() == 45);
 	CHECK(tg_read_ext() == 1234);
 	CHECK(tg_weak_answer() == 7);
+	CHECK(tg_weak_ptr == &tg_weak_target);
 	CHECK(tg_origin.x == 10 && tg_origin.y == 20);
 #ifndef _WIN32
 	CHECK(tg_prot_var == 41 && tg_prot_get() == 42);
