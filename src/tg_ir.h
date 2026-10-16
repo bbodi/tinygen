@@ -16,8 +16,14 @@ typedef struct tyg_proc   tgProc;
 ////////////////////////////////////////////////////////////////
 // Target
 //
-// The target of the module being built or written on this thread. Lowering asks
-// these instead of taking the module.
+// The target of the module being built or written on this thread. The ABI code, the
+// lowerings and the object writers ask these instead of taking the module.
+//
+// Each public entry point that reaches those sets tg_cur_target from its module first:
+// tyg_module_new, every builder call through tg_b_ok, tyg_proc_begin and tyg_module_emit.
+// Code that only has a module, such as the type constructors in types.c, reads m->target
+// instead, since the module may not be the last one an entry point set. Two modules may be
+// used in turn on one thread; two threads never share a module.
 ////////////////////////////////////////////////////////////////
 
 static TG_THREAD_LOCAL tyg_target tg_cur_target;

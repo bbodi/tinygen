@@ -203,7 +203,12 @@ TG_INTERNAL void tg_arena_free(tgArena *a) {
 	memset(a, 0, sizeof(*a));
 }
 
-// The arena of the procedure being built or lowered on this thread.
+// The arena of the procedure being built or lowered on this thread. tyg_proc_begin and every
+// builder call (tg_b_ok in build.c) point tg_arena_cur at the module's proc_arena, and
+// tg_proc_discard resets that arena and clears tg_arena_cur when the procedure ends. So an
+// allocation from tg_arena() during a procedure lives until tyg_proc_end; what must outlive
+// it goes in the module's own arena or on the heap. Outside a procedure, tg_arena() is a
+// per-thread arena that is never reset.
 static TG_THREAD_LOCAL tgArena  tg_arena_own;
 static TG_THREAD_LOCAL tgArena *tg_arena_cur;
 
