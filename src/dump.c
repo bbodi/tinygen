@@ -15,7 +15,7 @@ static char const *const tg_op_names[tgOp_COUNT] = {
 	"fence", "atomic.load", "atomic.store", "atomic.rmw", "atomic.cas",
 	"rdcycle", "cpurelax", "prefetch", "stackptr", "frameaddr", "retaddr", "sqrt", "fma",
 	"bswap", "popcount", "ctz", "clz", "syscall", "mulovf", "mulhiu", "cpuid", "xgetbv",
-	"vec128", "valgrind", "alloca", "tlsaddr", "ftohalf", "halftof", "asm",
+	"vec128", "valgrind", "alloca", "tlsaddr", "ftohalf", "halftof",
 	"stackrestore", "x87",
 };
 

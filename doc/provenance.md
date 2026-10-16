@@ -36,7 +36,8 @@ the source describe the current code only.
   pool, the RAD Debugger section (`.raddbg`) of COFF objects, the checks for
   x86-only operations in the arm64 lowering (`cpuid`, `xgetbv`, valgrind
   requests), and the inline assembly templates (`x64_asm.cpp`), which the
-  public API never exposed.
+  public API never exposed. The IR op `tgOp_Asm`, its lowering and the
+  register allocator's pin callback went with them.
 - **Thread locals.** The original chose the TLS model from the build mode.
   tinygen does not know the build mode, so it takes position independent
   code as the sign of a shared library.

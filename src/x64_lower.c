@@ -80,9 +80,6 @@ TG_INTERNAL void   tg_win64_epilogue(tgLower *L);
 TG_INTERNAL tgOpnd tg_win64_tls_opnd(tgLower *L, tgMem m, u8 scratch);
 TG_INTERNAL tgOpnd tg_win64_import_opnd(tgLower *L, tgMem m, u8 scratch);
 
-// Defined by x64_asm.c, ported later; see the TODO(port) section at the end of this file.
-TG_INTERNAL bool tg_asm_layout(tgAsmItemSlice items, tgU8Slice pool, i32 label_count, i64 start, tgBytes *code);
-
 // The hardware number of a gpr to its DWARF number.
 TG_INTERNAL u8 x64_dwarf_reg(u8 r) {
 	static u8 const map[16] = {0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15};
@@ -96,7 +93,6 @@ TG_INTERNAL bool x64_clobbers(tgInstr const *in) {
 	case tgOp_Ret:
 	case tgOp_Syscall:
 	case tgOp_TlsAddr:
-	case tgOp_Asm:
 		return true;
 	}
 	return false;
@@ -120,15 +116,6 @@ TG_INTERNAL void x64_target_wants(void *ctx, tgProc *p, tgInstr const *in, tgNot
 		if (arg->kind == tgCallArg_Gpr && (t->caller_x & (1u << arg->reg))) note(note_ctx, arg->vreg, arg->reg);
 		if (arg->kind == tgCallArg_Xmm && (t->caller_v & (1u << arg->reg)) && tg_type_is_float(arg->type)) note(note_ctx, arg->vreg, TG_FREG + arg->reg);
 	}
-}
-
-// an asm template's operands move between fixed registers and their slots
-TG_INTERNAL void x64_target_pins(void *ctx, tgProc *p, tgInstr const *in, tgPinProc pin, void *pin_ctx) {
-	(void)ctx;
-	if (in->op != tgOp_Asm) return;
-	tgAsmBlock const *blk = &p->asms.data[(isize)in->imm];
-	for (isize i = 0; i < blk->inputs.count; i++) pin(pin_ctx, blk->inputs.data[i].vreg);
-	for (isize i = 0; i < blk->outputs.count; i++) pin(pin_ctx, blk->outputs.data[i].vreg);
 }
 
 TG_INTERNAL void tg_lower_layout(tgLower *L) {
@@ -162,7 +149,6 @@ TG_INTERNAL void tg_lower_layout(tgLower *L) {
 	target.ctx = &xt;
 	target.clobbers = x64_target_clobbers;
 	target.wants = x64_target_wants;
-	target.pins = x64_target_pins;
 	target.reads_first = NULL;
 	tg_alloc_regs(p, &R, pools, &target);
 	L->uses      = R.uses;
@@ -1164,96 +1150,6 @@ TG_INTERNAL void tg_lower_call(tgLower *L, tgCall const *c, bool is_ret) {
 	}
 }
 
-// vmovups ymm/zmm <-> [rax]
-TG_INTERNAL void tg_vmovups_wide_rax(tgAsm *a, i32 size, bool load, u8 x) {
-	tg_vmovups_wide(a, size, load, x, tg_m(RAX, 0));
-}
-
-// The operands are pinned to their slots, so loading one register never overwrites another's input.
-TG_INTERNAL void tg_lower_asm(tgLower *L, tgAsmBlock const *blk) {
-	tgAsm *a = &L->a;
-	i32 save_base = blk->save_local >= 0 ? L->p->locals.data[blk->save_local].frame_offset : 0;
-	i32 k = 0;
-	for (u8 r = 0; r < 16; r++) {
-		if (blk->save_regs & (1u << r)) tg_mov_rm_r(a, 8, tg_m(RBP, save_base + 8*k++), r);
-	}
-	i32 xmm_base = blk->xmm_save_local >= 0 ? L->p->locals.data[blk->xmm_save_local].frame_offset : 0;
-	k = 0;
-	for (u8 r = 0; r < 16; r++) {
-		if (blk->save_xmms & (1u << r)) tg_movups_m_x(a, tg_m(RBP, xmm_base + 16*k++), r);
-	}
-	if (blk->rbp_local >= 0) tg_mov_rm_r(a, 8, tg_m(RBP, L->p->locals.data[blk->rbp_local].frame_offset), RBP);
-	// vector inputs first, they go through rax
-	for (isize i = 0; i < blk->inputs.count; i++) {
-		tgAsmIo const *io = &blk->inputs.data[i];
-		if (io->kind != tgAsmIo_XmmMem) continue;
-		x64_get(L, RAX, io->vreg, 8, tgExt_None);
-		if (io->size >= 32) tg_vmovups_wide_rax(a, io->size, true, io->reg);
-		else tg_load_xmm(L, io->reg, tg_m(RAX, 0), io->size);
-	}
-	for (isize i = 0; i < blk->inputs.count; i++) {
-		tgAsmIo const *io = &blk->inputs.data[i];
-		if (io->kind == tgAsmIo_Xmm) tg_load_xmm(L, io->reg, x64_slot(L, io->vreg), io->size);
-	}
-	for (isize i = 0; i < blk->inputs.count; i++) {
-		tgAsmIo const *io = &blk->inputs.data[i];
-		if (io->kind == tgAsmIo_Gpr) x64_get(L, io->reg, io->vreg, io->size, io->sign ? tgExt_Sign : tgExt_Zero);
-	}
-	// mov ah, [rbp + slot]: no REX, so the reg field names the high byte
-	for (isize i = 0; i < blk->inputs.count; i++) {
-		tgAsmIo const *io = &blk->inputs.data[i];
-		if (io->kind != tgAsmIo_Gpr8H) continue;
-		i64 kv = 0;
-		if (x64_is_const(L, io->vreg, &kv)) {
-			tg_b(a, (u8)(0xB0 + io->reg)); // mov ah, imm8
-			tg_b(a, (u8)kv);
-		} else {
-			tg_enc(a, 0, 0x8A, io->reg, x64_slot(L, io->vreg), 0);
-		}
-	}
-	tgBytes code;
-	memset(&code, 0, sizeof(code));
-	code.arena = tg_arena();
-	tg_array_reserve(&code, blk->pool.count + 16);
-	bool fits = tg_asm_layout(blk->items, blk->pool, blk->label_count, tg_pos(a), &code);
-	TG_ASSERT(fits);
-	tg_bytes(a, code.data, code.count);
-	tg_array_free(&code);
-	if (blk->rbp_local >= 0) {
-		// rbp is not the frame yet, rsp is back where it was
-		tg_mov_r_rm(a, 8, RBP, tg_m(RSP, L->frame_size + L->p->locals.data[blk->rbp_local].frame_offset));
-	}
-	// gpr outputs first, then the flags, before anything changes them, then vectors through rax
-	for (isize i = 0; i < blk->outputs.count; i++) {
-		tgAsmIo const *io = &blk->outputs.data[i];
-		if (io->kind == tgAsmIo_Gpr) tg_mov_rm_r(a, io->size, x64_slot(L, io->vreg), io->reg);
-		if (io->kind == tgAsmIo_Gpr8H) tg_enc(a, 0, 0x88, io->reg, x64_slot(L, io->vreg), 0);
-		if (io->kind == tgAsmIo_Xmm) tg_store_xmm(L, x64_slot(L, io->vreg), io->reg, io->size);
-	}
-	for (isize i = 0; i < blk->outputs.count; i++) {
-		tgAsmIo const *io = &blk->outputs.data[i];
-		if (io->kind != tgAsmIo_Flag) continue;
-		tg_setcc(a, (tgCC)io->reg, RAX);
-		tg_load_ext(a, 1, false, RAX, tg_r(RAX));
-		tg_mov_rm_r(a, io->size, x64_slot(L, io->vreg), RAX);
-	}
-	for (isize i = 0; i < blk->outputs.count; i++) {
-		tgAsmIo const *io = &blk->outputs.data[i];
-		if (io->kind != tgAsmIo_XmmMem) continue;
-		x64_get(L, RAX, io->vreg, 8, tgExt_None);
-		if (io->size >= 32) tg_vmovups_wide_rax(a, io->size, false, io->reg);
-		else tg_store_xmm(L, tg_m(RAX, 0), io->reg, io->size);
-	}
-	k = 0;
-	for (u8 r = 0; r < 16; r++) {
-		if (blk->save_regs & (1u << r)) tg_mov_r_rm(a, 8, r, tg_m(RBP, save_base + 8*k++));
-	}
-	k = 0;
-	for (u8 r = 0; r < 16; r++) {
-		if (blk->save_xmms & (1u << r)) tg_movups_x_m(a, r, tg_m(RBP, xmm_base + 16*k++));
-	}
-}
-
 TG_INTERNAL void x64_epilogue(tgLower *L) {
 	tgAsm *a = &L->a;
 	if (L->p->naked) {
@@ -1999,9 +1895,6 @@ TG_INTERNAL void tg_lower_instr(tgLower *L, tgInstr const *in) {
 		tg_movups_m_x(a, tg_mem_opnd(L, in->mem, R11), xmm1);
 		break;
 	}
-	case tgOp_Asm:
-		tg_lower_asm(L, &p->asms.data[(isize)in->imm]);
-		break;
 	case tgOp_X87:
 		x64_lower_x87(L, in);
 		break;
@@ -2208,9 +2101,8 @@ TG_INTERNAL void x64_lower_proc(tgProc *p, tgLowerOut *out) {
 	tg_lower_layout(&L);
 
 	tgAsm *a = &L.a;
-	// 16 byte aligned procedure starts, more when an asm template aligns its code
+	// 16 byte aligned procedure starts
 	out->align = 16;
-	for (isize i = 0; i < p->asms.count; i++) out->align = tg_max(out->align, (i64)p->asms.data[i].align);
 	L.proc_start = tg_pos(a);
 
 	// the arrays of dbg live as long as the module, in its arena
@@ -2424,16 +2316,4 @@ TG_INTERNAL void x64_lower_proc(tgProc *p, tgLowerOut *out) {
 	tg_array_free(&L.remat);
 	tg_array_free(&L.rmem);
 	tg_array_free(&L.zx);
-}
-
-////////////////////////////////////////////////////////////////
-// TODO(port): defined by x64_asm.c later
-//
-// Lays out an asm template's items at `start` into `code`. Delete this when the asm template
-// machinery is ported, if ever; nothing in the public API makes a tgOp_Asm yet.
-////////////////////////////////////////////////////////////////
-
-TG_INTERNAL bool tg_asm_layout(tgAsmItemSlice items, tgU8Slice pool, i32 label_count, i64 start, tgBytes *code) {
-	(void)items; (void)pool; (void)label_count; (void)start; (void)code;
-	TG_PANIC("tg_asm_layout: asm templates are not ported yet");
 }

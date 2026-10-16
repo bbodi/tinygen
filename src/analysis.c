@@ -132,12 +132,6 @@ TG_FORCEINLINE void tg_for_each_vreg(tgProc *p, tgInstr const *in, tgVregProc f,
 		f(ctx, in->dst, true);
 		f(ctx, in->c, true);
 		break;
-	case tgOp_Asm: {
-		tgAsmBlock const *blk = &p->asms.data[(isize)in->imm];
-		for (isize i = 0; i < blk->inputs.count; i++) f(ctx, blk->inputs.data[i].vreg, false);
-		for (isize i = 0; i < blk->outputs.count; i++) f(ctx, blk->outputs.data[i].vreg, blk->outputs.data[i].kind != tgAsmIo_XmmMem);
-		break;
-	}
 	case tgOp_Call:
 	case tgOp_Ret:
 	case tgOp_Syscall: {
@@ -504,7 +498,6 @@ TG_INTERNAL void tg_cleanup_proc(tgProc *p) {
 		tgBlock *b = p->order.data[bi];
 		for (isize ii = 0; ii < b->instrs.count; ii++) {
 			tgInstr const *in = &b->instrs.data[ii];
-			if (in->op == tgOp_Asm) return; // its memory operands are not followed
 			C.bi = (i32)bi;
 			C.ii = (i32)ii;
 			tg_for_each_vreg(p, in, tg__cleanup_count, &C);
@@ -648,7 +641,6 @@ TG_INTERNAL void tg_fold_const_locals(tgProc *p) {
 		tgBlock *b = p->order.data[bi];
 		for (isize ii = 0; ii < b->instrs.count; ii++) {
 			tgInstr const *in = &b->instrs.data[ii];
-			if (in->op == tgOp_Asm) goto done;
 			if (in->op == tgOp_Call || in->op == tgOp_Ret || in->op == tgOp_Syscall) {
 				tgCall const *c = &p->calls.data[(isize)in->imm];
 				for (isize ai = 0; ai < c->args.count; ai++) {
@@ -730,7 +722,6 @@ TG_INTERNAL void tg_reuse_loads(tgProc *p) {
 		rc.bi = (i32)bi;
 		for (isize ii = 0; ii < b->instrs.count; ii++) {
 			tgInstr const *in = &b->instrs.data[ii];
-			if (in->op == tgOp_Asm) { tg_array_free(&rc.defs); tg_array_free(&rc.def_block); tg_array_free(&escaped); return; }
 			tg_for_each_vreg(p, in, tg__reuse_count, &rc);
 			if (in->op != tgOp_Load && in->op != tgOp_Store && in->mem.kind == tgMem_Local) escaped.data[in->mem.base] = true;
 		}
@@ -989,7 +980,6 @@ TG_INTERNAL void tg_forward_mem_copies(tgProc *p) {
 		tgBlock *b = p->order.data[bi];
 		for (isize ii = 0; ii < b->instrs.count; ii++) {
 			tgInstr const *in = &b->instrs.data[ii];
-			if (in->op == tgOp_Asm) goto done;
 			tg_for_each_vreg(p, in, tg__copy_count, &cc);
 			switch (in->op) {
 			case tgOp_MemCopy:
@@ -1273,11 +1263,6 @@ TG_INTERNAL void tg__rename_uses(tgProc *p, tgInstr *in, u32 const *map) {
 		TG_RN(in->b);
 		TG_RN(in->c);
 		break;
-	case tgOp_Asm: {
-		tgAsmBlock *blk = &p->asms.data[(isize)in->imm];
-		for (isize i = 0; i < blk->inputs.count; i++) TG_RN(blk->inputs.data[i].vreg);
-		break;
-	}
 	case tgOp_Call:
 	case tgOp_Ret:
 	case tgOp_Syscall: {
@@ -1382,7 +1367,6 @@ TG_INTERNAL void tg_forward_copies(tgProc *p) {
 		F.bi = (i32)bi;
 		for (isize ii = 0; ii < b->instrs.count; ii++) {
 			tgInstr const *in = &b->instrs.data[ii];
-			if (in->op == tgOp_Asm) goto done;
 			if (in->op == tgOp_Copy || tg__cse_op(in->op)) any = true;
 			F.ii = (i32)ii;
 			tg_for_each_vreg(p, in, tg__forward_count, &F);
@@ -1497,7 +1481,6 @@ TG_INTERNAL void tg_pair_loads(tgProc *p) {
 		tgBlock *b = p->order.data[bi];
 		for (isize ii = 0; ii < b->instrs.count; ii++) {
 			tgInstr const *in = &b->instrs.data[ii];
-			if (in->op == tgOp_Asm) { tg_array_free(&pc.defs); return; }
 			tg_for_each_vreg(p, in, tg__pair_count, &pc);
 		}
 	}
@@ -1651,7 +1634,6 @@ typedef struct tgVregFacts {
 	i32  def_block; // the block of the latest write so far, or -1
 	i8   want;      // the argument register a call reads it from, TG_NOREG, or -2 for several
 	bool multi;     // it appears in more than one block
-	bool pinned;    // it must stay in its slot
 	bool cross;     // a read is in another block than the latest write before it
 } tgVregFacts;
 
@@ -1693,17 +1675,14 @@ TG_INTERNAL void tg_reg_alloc_free(tgRegAlloc *R) {
 // What the target tells tg_alloc_regs:
 //   clobbers(ctx, in):              whether `in` calls something or writes caller saved registers
 //   wants(ctx, p, in, note, nctx):  note(nctx, vreg, reg) for each argument `in` reads in a fixed register
-//   pins(ctx, p, in, pin, pctx):    pin(pctx, vreg) for each vreg that must stay in its slot
 //   reads_first(ctx, in):           whether `in` reads all its operands before it writes its
 //                                   result, so the result may go to a register an operand leaves
 typedef void (*tgNoteWantProc)(void *ctx, u32 v, i32 r);
-typedef void (*tgPinProc)(void *ctx, u32 v);
 
 typedef struct tgRegTarget {
 	void *ctx;
 	bool (*clobbers)(void *ctx, tgInstr const *in);
 	void (*wants)(void *ctx, tgProc *p, tgInstr const *in, tgNoteWantProc note, void *note_ctx);
-	void (*pins)(void *ctx, tgProc *p, tgInstr const *in, tgPinProc pin, void *pin_ctx);
 	bool (*reads_first)(void *ctx, tgInstr const *in);
 } tgRegTarget;
 
@@ -1753,11 +1732,6 @@ TG_INTERNAL void tg__alloc_note_want(void *ctx, u32 v, i32 r) {
 	tgVregFacts *fx = X->fx;
 	if (v == 0) return;
 	fx[v].want = fx[v].want == TG_NOREG || fx[v].want == r ? (i8)r : (i8)-2;
-}
-
-TG_INTERNAL void tg__alloc_pin(void *ctx, u32 v) {
-	tgAllocCtx *X = (tgAllocCtx *)ctx;
-	if (v != 0) X->fx[v].pinned = true;
 }
 
 TG_INTERNAL void tg__alloc_scan(void *ctx, u32 v, bool is_def) {
@@ -1993,7 +1967,7 @@ TG_INTERNAL void tg__alloc_assign(void *ctx, u32 v, bool is_def) {
 	tgRegAlloc *R = X->R;
 	tgVregFacts *fx = X->fx;
 	i32 linear = X->linear;
-	if (v == 0 || !is_def || !R->in_block.data[v] || R->is_const.data[v] || R->remat.data[v] || fx[v].pinned || R->reg.data[v] != TG_NOREG) return;
+	if (v == 0 || !is_def || !R->in_block.data[v] || R->is_const.data[v] || R->remat.data[v] || R->reg.data[v] != TG_NOREG) return;
 	tgType t = X->p->vregs.data[v];
 	if (!tg_type_is_int(t) && !tg_type_is_float(t)) return;
 	if (R->via.data[v] >= 0 && R->local_reg.data[R->via.data[v]] >= 0) {
@@ -2134,7 +2108,6 @@ TG_INTERNAL void tg_alloc_regs(tgProc *p, tgRegAlloc *R, tgRegPools pools, tgReg
 			}
 			if (in->op == tgOp_Alloca || in->op == tgOp_StackRestore) R->sp_moves = true;
 			target->wants(target->ctx, p, in, tg__alloc_note_want, &X);
-			target->pins(target->ctx, p, in, tg__alloc_pin, &X);
 			tg_array_add(&X.clobbers, X.clobbers.data[X.linear] + (target->clobbers(target->ctx, in) ? 1 : 0));
 			X.linear++;
 		}
@@ -2168,7 +2141,7 @@ TG_INTERNAL void tg_alloc_regs(tgProc *p, tgRegAlloc *R, tgRegPools pools, tgReg
 	for (isize v = 1; v < vreg_count; v++) {
 		X.gid.data[v] = -1;
 		tgType t = p->vregs.data[v];
-		if (R->in_block.data[v] || fx[v].defs == 0 || R->is_const.data[v] || R->remat.data[v] || fx[v].pinned || (!tg_type_is_int(t) && !tg_type_is_float(t))) continue;
+		if (R->in_block.data[v] || fx[v].defs == 0 || R->is_const.data[v] || R->remat.data[v] || (!tg_type_is_int(t) && !tg_type_is_float(t))) continue;
 		X.gid.data[v] = (i32)X.gvreg.count;
 		tg_array_add(&X.gvreg, (u32)v);
 	}
@@ -2369,7 +2342,7 @@ TG_INTERNAL void tg_alloc_regs(tgProc *p, tgRegAlloc *R, tgRegPools pools, tgReg
 					i32 l = tg__alloc_local_of(&X, &in->mem);
 					u32 v = in->dst;
 					i32 id = X.gid.data[v];
-					if (fx[v].pinned || fx[v].defs != 1 || R->uses.data[v] == 0 || tg_type_is_float(p->vregs.data[v]) != X.local_fp.data[l] ||
+					if (fx[v].defs != 1 || R->uses.data[v] == 0 || tg_type_is_float(p->vregs.data[v]) != X.local_fp.data[l] ||
 					    X.glo.data[id] != pos || X.ghi.data[id] < pos) continue;
 					bool ok = true;
 					for (i32 k = wstart.data[l]; ok && k < wstart.data[l+1]; k++) ok = wpos.data[k] <= pos || wpos.data[k] > X.ghi.data[id];
@@ -2380,7 +2353,7 @@ TG_INTERNAL void tg_alloc_regs(tgProc *p, tgRegAlloc *R, tgRegPools pools, tgReg
 				} else if (in->op == tgOp_Load) {
 					i32 l = tg__alloc_local_of(&X, &in->mem);
 					u32 v = in->dst;
-					if (l < 0 || v == 0 || !R->in_block.data[v] || fx[v].pinned || R->uses.data[v] == 0 || fx[v].last_use - pos > 256 ||
+					if (l < 0 || v == 0 || !R->in_block.data[v] || R->uses.data[v] == 0 || fx[v].last_use - pos > 256 ||
 					    tg_type_is_float(p->vregs.data[v]) != X.local_fp.data[l]) continue;
 					bool ok = true;
 					for (isize j = i+1; ok && j <= i + (fx[v].last_use - pos); j++) ok = !tg__alloc_writes(&X, &b->instrs.data[j], l);
@@ -2391,7 +2364,7 @@ TG_INTERNAL void tg_alloc_regs(tgProc *p, tgRegAlloc *R, tgRegPools pools, tgReg
 				} else if (in->op == tgOp_Store) {
 					i32 l = tg__alloc_local_of(&X, &in->mem);
 					u32 v = in->a;
-					if (l < 0 || v == 0 || !R->in_block.data[v] || fx[v].pinned || R->is_const.data[v] || R->remat.data[v] || R->via.data[v] >= 0 ||
+					if (l < 0 || v == 0 || !R->in_block.data[v] || R->is_const.data[v] || R->remat.data[v] || R->via.data[v] >= 0 ||
 					    !(X.local_fp.data[l] ? tg_type_is_float(p->vregs.data[v]) : tg_type_is_int(p->vregs.data[v])) || pos - fx[v].def_pos > 256 || alias_end.data[l] > fx[v].def_pos ||
 					    fx[v].last_use - pos > 256) continue;
 					isize d = fx[v].def_pos - bstart.data[bi];

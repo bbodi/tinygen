@@ -1451,7 +1451,6 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 	p->order.arena = tg_arena();
 	p->locals.arena = tg_arena();
 	p->calls.arena = tg_arena();
-	p->asms.arena = tg_arena();
 	p->params_in.arena = tg_arena();
 	p->param_vals.arena = tg_arena();
 	p->debug_vars.arena = tg_arena();

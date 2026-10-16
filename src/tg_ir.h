@@ -198,7 +198,6 @@ enum {
 	tgOp_TlsAddr,     // dst = this thread's address of the thread local symbol imm
 	tgOp_FToHalf,     // dst(i16) = f16 bits of a(aux float type), rounded by the cpu; arm64 only
 	tgOp_HalfToF,     // dst(f32) = the f16 bits a; arm64 only
-	tgOp_Asm,         // inline asm template: imm = index into proc->asms
 	tgOp_StackRestore, // rsp = a, a value of tgOp_StackPointer: frees the allocas since
 	tgOp_X87,         // x86-64 long double on the x87 unit, aux = tgX87Op, see there
 
@@ -472,62 +471,6 @@ typedef struct tgArgValue {
 } tgArgValue;
 
 ////////////////////////////////////////////////////////////////
-// Inline asm
-////////////////////////////////////////////////////////////////
-
-typedef u8 tgAsmIoKind;
-enum {
-	tgAsmIo_Gpr,    // vreg <-> gpr
-	tgAsmIo_Gpr8H,  // u8 vreg <-> ah, ch, dh or bh (`reg` 4..7)
-	tgAsmIo_Xmm,    // float vreg <-> xmm
-	tgAsmIo_XmmMem, // `size` bytes at the pointer vreg <-> xmm/ymm/zmm
-	tgAsmIo_Flag,   // output only: the condition `reg` (a tgCC) as 0 or 1
-};
-
-typedef struct tgAsmIo {
-	tgAsmIoKind kind;
-	u8           reg;
-	u8           size;
-	bool         sign;
-	u32          vreg;
-} tgAsmIo;
-
-typedef u8 tgAsmItemKind;
-enum { tgAsmItem_Bytes, tgAsmItem_Label, tgAsmItem_Align, tgAsmItem_Branch };
-
-// One piece of a template's code: plain bytes, a label, an alignment, or a label
-// reference. A branch starts short and grows to its rel32 form when the target is out
-// of range; a rip relative memory operand only has the rel32 form.
-typedef struct tgAsmItem {
-	tgAsmItemKind kind;
-	bool is_long;
-	i32  label;                             // the label, or the alignment of an Align
-	i32  start,      len,      rel_at;      // in the byte pool; the short form of a branch
-	i32  long_start, long_len, long_rel_at; // the rel32 form, len 0 if none
-} tgAsmItem;
-
-TG_SLICE(tgAsmItemSlice, tgAsmItem);
-TG_SLICE(tgAsmIoSlice, tgAsmIo);
-
-// An asm template call: the operands live in fixed registers around the encoded bytes,
-// which are laid out where they land, for #align.
-typedef struct tgAsmBlock {
-	tgAsmItemSlice items;
-	tgU8Slice      pool;
-	i32             label_count;
-	i32             align;      // the largest #align, 0 if none
-	tgAsmIoSlice   inputs;
-	tgAsmIoSlice   outputs;
-	u16             save_regs;  // callee saved gprs the template touches, bit = register number
-	i32             save_local; // frame local they are saved in, or -1
-	u16             save_xmms;  // Win64: callee saved xmm registers the template touches
-	i32             xmm_save_local;
-	i32             rbp_local;  // frame local rbp is saved in when the template writes it, or -1
-} tgAsmBlock;
-
-TG_ARRAY(tgAsmBlockArray, tgAsmBlock);
-
-////////////////////////////////////////////////////////////////
 // Procedures
 ////////////////////////////////////////////////////////////////
 
@@ -703,7 +646,6 @@ struct tyg_proc {
 	tgVregInfoArray   vinfo;
 	tgLocalArray      locals;
 	tgCallArray       calls;
-	tgAsmBlockArray   asms;
 	tgParamInArray    params_in;
 
 	tgU32Array        param_vals;  // per parameter: its vreg, or a pointer vreg to its memory

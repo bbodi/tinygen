@@ -189,10 +189,6 @@ TG_INTERNAL void a64_target_wants(void *ctx, tgProc *p, tgInstr const *in, tgNot
 	}
 }
 
-TG_INTERNAL void a64_target_pins(void *ctx, tgProc *p, tgInstr const *in, tgPinProc pin, void *pin_ctx) {
-	(void)ctx; (void)p; (void)in; (void)pin; (void)pin_ctx;
-}
-
 // The ops whose lowering reads every operand before its one write of the result.
 TG_INTERNAL bool a64_target_reads_first(void *ctx, tgInstr const *in) {
 	(void)ctx;
@@ -239,7 +235,6 @@ TG_INTERNAL void a64_lower_layout(a64Lower *L) {
 	target.ctx = p;
 	target.clobbers = a64_target_clobbers;
 	target.wants = a64_target_wants;
-	target.pins = a64_target_pins;
 	target.reads_first = a64_target_reads_first;
 	tg_alloc_regs(p, &R, pools, &target);
 	L->uses      = R.uses;
