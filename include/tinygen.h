@@ -127,7 +127,8 @@ void    tyg_symbol_add_flags(tyg_module *m, tyg_sym sym, unsigned flags);
 /* Defines a data symbol. `bytes` is NULL for the zero-filled sections. */
 int tyg_data(tyg_module *m, tyg_sym sym, tyg_section section,
              const void *bytes, int64_t size, int64_t align);
-/* Stores the address of `target` + addend at `offset` in the data of `sym`. */
+/* Stores the address of `target` + addend at `offset` in the data of `sym`. `size` is 8,
+ * or 4 except on macOS. */
 int tyg_data_reloc(tyg_module *m, tyg_sym sym, int64_t offset, int size,
                    tyg_sym target, int64_t addend);
 

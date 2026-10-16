@@ -220,6 +220,11 @@ int tyg_data_reloc(tyg_module *m, tyg_sym sym, int64_t offset, int size, tyg_sym
 		tg_set_error(m, "tyg_data_reloc: bad size %d or offset %lld in %s", size, (long long)offset, s->name.text);
 		return 1;
 	}
+	if (size == 4 && m->target.os == TYG_OS_DARWIN) {
+		// ld64 takes no 32-bit absolute address in a 64-bit image
+		tg_set_error(m, "tyg_data_reloc: a 4 byte address is not supported on macOS");
+		return 1;
+	}
 	tg_data_reloc(m, sym, offset, size, target, addend);
 	return 0;
 }

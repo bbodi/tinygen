@@ -550,6 +550,17 @@ static void build_in_section(void) {
 	check(tyg_proc_end(p));
 }
 
+// On macOS, whose linker takes no 4 byte address in data, tyg_data_reloc fails for one
+static void check_abs32(void) {
+	static const int zero = 0;
+	tyg_sym s = tyg_symbol(m, "tg_addr32", 0);
+	check(tyg_data(m, s, TYG_SECTION_DATA, &zero, 4, 4));
+	if (tyg_data_reloc(m, s, 0, 4, s, 0) == 0) {
+		fprintf(stderr, "a 4 byte data relocation did not fail\n");
+		exit(1);
+	}
+}
+
 // Debug info for a debugger to show:
 //
 //   typedef struct Point { int x, y; } Point;
@@ -808,6 +819,7 @@ int main(int argc, char **argv) {
 	build_copy_fwd();
 	build_pair();
 	build_store_fwd();
+	if (!windows && !is_elf) check_abs32();
 	check(tyg_module_write(m, out));
 	tyg_module_free(m);
 	return 0;
