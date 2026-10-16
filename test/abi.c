@@ -594,6 +594,7 @@ static void build_far(void) {
 ////////////////////////////////////////////////////////////////
 
 static const tyg_type *ldt, *ldst, *ldit; // long double, struct LDS {long double x;}, struct LDI {int i; long double x;}
+static const tyg_type *ldut;              // union LDU {long double x; struct {long long a, b;} p;}
 static int64_t ldsz, ldal;                // the size and alignment of long double
 static int ld_is_double;                  // arm64 macOS and Windows
 
@@ -610,6 +611,12 @@ static void make_ld_types(void) {
 	f2[1].type = ldt;
 	f2[1].offset = ldal;
 	ldit = tyg_type_record(m, ldal + ldsz, ldal, f2, 2);
+	tyg_field l2[2] = {{0, 0}, {0, 8}};
+	l2[0].type = l2[1].type = T(TYG_I64);
+	tyg_field u[2] = {{0, 0}, {0, 0}};
+	u[0].type = ldt;
+	u[1].type = tyg_type_record(m, 16, 8, l2, 2);
+	ldut = tyg_type_record(m, 16, ldal > 8 ? ldal : 8, u, 2);
 }
 
 // The target's bytes of the long double v: a double, or for x87 the 64-bit mantissa with its
@@ -748,6 +755,23 @@ static void build_ld_structs(void) {
 		tyg_ld_bin(p, TYG_FADD, tyg_at_local(t, 0), tyg_at_local(t, 0), tyg_at_val(v, ldal));
 		tyg_ld_bin(p, TYG_FADD, tyg_at_local(t, 0), tyg_at_local(t, 0), tyg_at_val(w, 0));
 		tyg_ret_mem(p, tyg_at_local(t, 0));
+		check(tyg_proc_end(p));
+	}
+	// the union's integer fields make both eightbytes INTEGER on x86-64, despite the long double
+	{
+		const tyg_type *ps[2] = {T(TYG_I64), T(TYG_I64)};
+		tyg_proc *p = begin("tg_ldu_make", ldut, ps, 2, 0, NULL);
+		tyg_local out = tyg_local_new(p, 16, 8);
+		st(p, TYG_I64, tyg_at_local(out, 0), tyg_param(p, 0));
+		st(p, TYG_I64, tyg_at_local(out, 8), tyg_param(p, 1));
+		tyg_ret_mem(p, tyg_at_local(out, 0));
+		check(tyg_proc_end(p));
+	}
+	{
+		const tyg_type *ps[1] = {ldut};
+		tyg_proc *p = begin("tg_ldu_sum", T(TYG_I64), ps, 1, 0, NULL);
+		tyg_val u = tyg_param(p, 0);
+		tyg_ret(p, add(p, ld(p, TYG_I64, tyg_at_val(u, 0)), ld(p, TYG_I64, tyg_at_val(u, 8))));
 		check(tyg_proc_end(p));
 	}
 }
