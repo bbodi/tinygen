@@ -589,7 +589,8 @@ TG_INTERNAL bool tg_write_macho(tgModule *m, tgBytes *out) {
 	i64 addr = 0;
 	i64 file_end_addr = 0;
 	for (isize i = 0; i < machoOut_COUNT; i++) {
-		if (sec_size[i] == 0) continue;
+		// __text stays even when empty, like clang's: the debug info's low_pc refers to it
+		if (sec_size[i] == 0 && i != machoOut_Text) continue;
 		addr = tg_align_up(addr, sec_align[i]);
 		sect_addr[i] = addr;
 		sect_number[i] = ++nsects;
