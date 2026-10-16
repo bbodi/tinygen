@@ -10,6 +10,7 @@
 //   - a homogeneous float aggregate of up to four members takes consecutive v registers,
 //     and a 9 to 16 byte aggregate two x registers, all or nothing: when they do not fit,
 //     every register of the class counts as used and the members go onto the stack
+//   - any other aggregate of up to 8 bytes takes one x register, or an 8 byte stack slot
 //   - a 16 byte aligned aggregate of up to 16 bytes is an i128 to clang: two consecutive x
 //     registers, starting at an even one on Linux; Apple drops that rule but never starts
 //     it at x7; on the stack it is 16 byte aligned
@@ -176,7 +177,11 @@ TG_INTERNAL void a64_int_coerced_pieces(a64Class *c, tyg_type const *t) {
 		return;
 	}
 	if (size <= 8) {
+		// an i64 to clang, so its stack slot is 8 bytes even on Apple, unlike a narrow scalar's
 		a64_add_piece(c, a64_int_piece_type(size), (i32)size, 0, tgLoc_Gpr, tgExt_None);
+		c->block = true;
+		c->block_align = 8;
+		c->stack_size = 8;
 		return;
 	}
 	a64_add_piece(c, tgType_I64, 8, 0, tgLoc_Gpr, tgExt_None);

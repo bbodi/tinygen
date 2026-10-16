@@ -189,6 +189,40 @@ static void build_small(void) {
 	}
 }
 
+// struct B3 { unsigned char x[3]; }, which goes on the stack in an 8 byte slot as clang's i64:
+// int tg_stk_b3(long long a0, ..., long long a7, struct B3 s, int after)
+//     { return s.x[0] + s.x[1] + s.x[2] + after; }
+// int tg_call_stk_b3(void) { struct B3 s = {1, 2, 3}; return c_stk_b3(0, ..., 7, s, 36); }
+static void build_stk_b3(void) {
+	tyg_field f[1] = {{0, 0}};
+	f[0].type = tyg_type_array(m, TI(TYG_I8, 0), 3);
+	const tyg_type *b3 = tyg_type_record(m, 3, 1, f, 1);
+	const tyg_type *ps[10];
+	for (int i = 0; i < 8; i++) ps[i] = T(TYG_I64);
+	ps[8] = b3;
+	ps[9] = T(TYG_I32);
+	{
+		tyg_proc *p = begin("tg_stk_b3", T(TYG_I32), ps, 10, 0, NULL);
+		tyg_val sv = tyg_param(p, 8);
+		tyg_val r = tyg_param(p, 9);
+		for (int i = 0; i < 3; i++) r = add(p, r, tyg_convert(p, TYG_ZEXT, TYG_I32, ld(p, TYG_I8, tyg_at_val(sv, i))));
+		tyg_ret(p, r);
+		check(tyg_proc_end(p));
+	}
+	{
+		tyg_proc *p = begin("tg_call_stk_b3", T(TYG_I32), NULL, 0, 0, NULL);
+		tyg_sig *sig = tyg_sig_new(m, T(TYG_I32), ps, 10, 0);
+		tyg_local sl = tyg_local_new(p, 3, 1);
+		tyg_arg args[10];
+		for (int i = 0; i < 8; i++) args[i] = val(k64(p, i));
+		for (int i = 0; i < 3; i++) st(p, TYG_I8, tyg_at_local(sl, i), tyg_iconst(p, TYG_I8, i + 1));
+		args[8] = mem(tyg_at_local(sl, 0));
+		args[9] = val(tyg_iconst(p, TYG_I32, 36));
+		tyg_ret(p, tyg_call(p, sig, tyg_direct(tyg_symbol(m, "c_stk_b3", TYG_SYM_FUNC | TYG_SYM_GLOBAL | TYG_SYM_FOREIGN)), args, 10, NULL, NULL));
+		check(tyg_proc_end(p));
+	}
+}
+
 // Fills the arguments of c_many/tg_many with the values abi_main.c expects.
 static int many_args(tyg_proc *p, tyg_arg *args, tyg_local f3, tyg_local a16, tyg_local li) {
 	int n = 0;
@@ -952,6 +986,7 @@ int main(int argc, char **argv) {
 	build_a16_sum();
 	build_many();
 	build_small();
+	build_stk_b3();
 	build_call_c();
 	build_pk();
 	build_call_vread();
