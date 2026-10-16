@@ -22,7 +22,7 @@
 // past the fixed parameters, so the varargs lie in one array of 8 byte slots: the Win64
 // va_list is a plain pointer into it.
 
-// Defined by build.c, which comes later in the unity build.
+// Defined by ir.c, which comes later in the unity build.
 TG_INTERNAL void tg_fail(tgProc *p, char const *reason);
 TG_INTERNAL u32  tg_convop(tgProc *p, tgOp op, tgType dst, tgType src, u32 a);
 TG_INTERNAL i32  tg_add_local_raw(tgProc *p, i64 size, i64 align);

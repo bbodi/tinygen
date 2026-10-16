@@ -1,6 +1,6 @@
 // The IR, the ABI description, procedures and the module.
 //
-// Pipeline: the builder API (build.c) -> tyg IR per procedure -> analysis and
+// Pipeline: the builder API (build.c, call.c) -> tyg IR per procedure -> analysis and
 // register allocation -> machine code (x64_lower.c, a64_lower.c) -> the module's
 // sections -> an ELF, COFF or Mach-O object with DWARF or CodeView.
 #ifndef TG_IR_H
@@ -469,7 +469,7 @@ typedef struct tgCall {
 
 TG_ARRAY(tgCallArray, tgCall);
 
-// One argument of a call, converted from the public tyg_arg by build.c.
+// One argument of a call, converted from the public tyg_arg by call.c.
 typedef struct tgArgValue {
 	u32              val;  // a scalar, or 0
 	tgMem            mem;  // the aggregate, when val is 0
@@ -673,7 +673,7 @@ struct tyg_proc {
 	i32                debug_scope;
 	isize              params_ready; // 1 + the index of the entry block's tgOp_Nop with imm 2, or 0
 
-	char const *       fail_reason; // the first failure, see tg_fail in build.c
+	char const *       fail_reason; // the first failure, see tg_fail in ir.c
 };
 
 TG_INTERNAL i32 tg_vreg_count(tgProc *p) { return (i32)p->vregs.count; }

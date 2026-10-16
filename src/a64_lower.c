@@ -90,7 +90,7 @@ typedef struct a64Addr {
 // the TLS descriptor's resolver (general dynamic) like LLVM. An executable adds the offset in
 // the variable's GOT entry to the thread pointer (initial exec). tinygen does not know the
 // build mode, so it takes position independent code as the sign of a shared library, as
-// tg_tls_mem in build.c does.
+// tg_tls_mem in ir.c does.
 TG_INTERNAL bool a64_tls_calls(void) {
 	return tg_is_darwin() || tg_is_pic();
 }

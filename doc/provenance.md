@@ -8,7 +8,7 @@ the source describe the current code only.
 
 | tinygen         | Ported from                                                                   |
 |-----------------|-------------------------------------------------------------------------------|
-| `build.c`       | `xb_gen.cpp` (the IR helpers), `xb_gen_stmt.cpp` (calls, returns, parameters, debug scopes), `xb_backend.cpp` (`xb_new_proc`, `xb_lower_proc`) |
+| `ir.c`, `args.c`, `build.c`, `call.c` | `xb_gen.cpp` (the IR helpers), `xb_gen_stmt.cpp` (calls, returns, parameters, debug scopes), `xb_backend.cpp` (`xb_new_proc`, `xb_lower_proc`) |
 | `module.c`      | the module parts of `xb_gen.cpp`, `xb_globals.cpp` (`xb_section_reserve`), `xb_dwarf.cpp` (`xb_file_id`), `xb_backend.cpp` (`xb_append_lowered`, `xb_lower_start`) |
 | `x64_abi.c`     | `x64_abi.cpp`                                                                 |
 | `x64_win64.c`   | `x64_win64.cpp`                                                               |

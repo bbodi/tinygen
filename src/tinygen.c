@@ -20,5 +20,8 @@
 #include "coff.c"
 #include "codeview.c"
 #include "dump.c"
+#include "ir.c"
+#include "args.c"
 #include "build.c"
+#include "call.c"
 #include "api.c"

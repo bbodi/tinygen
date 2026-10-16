@@ -15,7 +15,7 @@
 //   - anything larger than 16 bytes is passed by pointer to a copy, and returned through x8
 //   - Apple makes the caller extend an integer narrower than 32 bits, and the callee its
 //     result; Linux extends neither
-//   - a C vararg goes onto the stack in an 8 byte slot on Apple (build.c), and is assigned
+//   - a C vararg goes onto the stack in an 8 byte slot on Apple (call.c), and is assigned
 //     like a fixed argument on Linux
 
 // Apple's arm64 calling convention, rather than AAPCS64
