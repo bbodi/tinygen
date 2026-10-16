@@ -10,6 +10,7 @@
 #include "a64_abi.c"
 #include "x64_abi.c"
 #include "analysis.c"
+#include "regalloc.c"
 #include "x64_lower.c"
 #include "a64_lower.c"
 #include "x64_win64.c"

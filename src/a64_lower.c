@@ -1,6 +1,6 @@
 // Lowering: tg IR -> arm64 machine code.
 //
-// Registers come from tg_alloc_regs (analysis.c). An interval takes x0-x8, v0-v7 or v20-v31
+// Registers come from tg_alloc_regs (regalloc.c). An interval takes x0-x8, v0-v7 or v20-v31
 // when no call happens in it, x19-x28 or d8-d15 otherwise. The rest live in 8 byte stack slots.
 // A constant with one definition is materialized at each use, or becomes the instruction's
 // immediate; a frame address is computed at each use, or becomes the access's offset. A compare

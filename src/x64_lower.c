@@ -1,6 +1,6 @@
 // Lowering: tg IR -> x86-64 machine code.
 //
-// Registers come from tg_alloc_regs (analysis.c). An interval takes rsi, rdi, r8, r9 or
+// Registers come from tg_alloc_regs (regalloc.c). An interval takes rsi, rdi, r8, r9 or
 // xmm4-xmm15 when no call happens in it, rbx or r12-r15 otherwise. On Win64 rsi, rdi and
 // xmm6-xmm15 are callee saved too, a float interval with a call in it takes one of the latter.
 // The rest live in 8 byte stack slots. A constant with one definition is materialized at each
