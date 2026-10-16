@@ -67,6 +67,7 @@ enum {
 };
 
 enum {
+	MACHO_N_WEAK_REF = 0x40,
 	MACHO_N_WEAK_DEF = 0x80,
 };
 
@@ -337,6 +338,7 @@ TG_INTERNAL bool tg_write_macho(tgModule *m, tgBytes *out) {
 			if (!referenced[i]) continue;
 			i32 o = macho_add_sym(&w, s->name, "_", "");
 			w.out_syms.data[o].n_type = MACHO_N_UNDF | MACHO_N_EXT;
+			if (s->flags & tgSymbolFlag_Weak) w.out_syms.data[o].n_desc |= MACHO_N_WEAK_REF;
 			sym_out[i] = o;
 			continue;
 		}

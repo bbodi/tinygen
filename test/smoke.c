@@ -445,6 +445,7 @@ static void build_tls(void) {
 // extern long long tg_ext_value; -- defined by smoke_main.c, reached as foreign data (__imp_ on Windows)
 // long long tg_read_ext(void) { return tg_ext_value; }
 // int tg_weak_answer(void) { return 7; } -- a weak definition
+// void *tg_weak_ptr = &tg_weak_target; -- a weak reference, defined by smoke_main.c
 static void build_ext_weak(void) {
 	tyg_sym ext = tyg_symbol(m, "tg_ext_value", TYG_SYM_GLOBAL | TYG_SYM_FOREIGN);
 	tyg_sig *sig = tyg_sig_new(m, i64t(), NULL, 0, 0);
@@ -456,6 +457,12 @@ static void build_ext_weak(void) {
 	p = tyg_proc_begin(m, tyg_symbol(m, "tg_weak_answer", TYG_SYM_FUNC | TYG_SYM_GLOBAL | TYG_SYM_WEAK), wsig);
 	tyg_ret(p, tyg_iconst(p, TYG_I32, 7));
 	check(tyg_proc_end(p));
+
+	static const long long zero = 0;
+	tyg_sym wref = tyg_symbol(m, "tg_weak_target", TYG_SYM_GLOBAL | TYG_SYM_FOREIGN | TYG_SYM_WEAK);
+	tyg_sym wptr = tyg_symbol(m, "tg_weak_ptr", TYG_SYM_GLOBAL);
+	check(tyg_data(m, wptr, TYG_SECTION_DATA, &zero, 8, 8));
+	check(tyg_data_reloc(m, wptr, 0, 8, wref, 0));
 }
 
 // int tg_prot_var = 41;                    -- protected visibility on ELF,
