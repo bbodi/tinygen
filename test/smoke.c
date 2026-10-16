@@ -732,6 +732,21 @@ static void build_store_fwd(void) {
 	check(tyg_proc_end(p));
 }
 
+// A module with data and no code, with the target's debug info, still makes an object
+static void check_data_only(tyg_target t) {
+	static const int v = 5;
+	tyg_module *dm = tyg_module_new(t, "data.tg");
+	if (!dm) { fprintf(stderr, "no module\n"); exit(1); }
+	const uint8_t *bytes;
+	size_t size;
+	if (tyg_data(dm, tyg_symbol(dm, "tg_only_data", TYG_SYM_GLOBAL), TYG_SECTION_DATA, &v, 4, 4) != 0 ||
+	    tyg_module_emit(dm, &bytes, &size) != 0) {
+		fprintf(stderr, "data only module: %s\n", tyg_error(dm));
+		exit(1);
+	}
+	tyg_module_free(dm);
+}
+
 int main(int argc, char **argv) {
 	char const *out = argc > 1 ? argv[1] : "smoke.o";
 	char const *target = argc > 2 ? argv[2] : "linux-x64";
@@ -757,6 +772,7 @@ int main(int argc, char **argv) {
 		return 2;
 	}
 	is_elf = t.os == TYG_OS_LINUX;
+	check_data_only(t);
 	m = tyg_module_new(t, "smoke.tg");
 	if (!m) { fprintf(stderr, "no module\n"); return 1; }
 	file = tyg_debug_file(m, "smoke.tg");
