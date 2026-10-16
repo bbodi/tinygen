@@ -125,7 +125,16 @@ locals and debug info.
 
 ## Tests
 
-`test/smoke.c` and `test/abi.c` build objects through the public API for a target:
+One command builds the generators, emits the objects of every target, and runs
+the tests the host can run. It lists the targets it skips:
+
+    test/run.sh
+
+`--docker` also runs the Linux targets in Docker. The objects are deterministic,
+so `--save DIR` before a change and `--compare DIR` after it check that the
+change leaves every object byte-identical.
+
+To run one test by hand: `test/smoke.c` and `test/abi.c` build objects through the public API for a target:
 `linux-x64` (the default), `linux-arm64`, `macos-arm64`, `macos-x64` or `windows`.
 `test/smoke.c` also takes `windows-dwarf` (DWARF instead of CodeView, for gdb),
 and `test/abi.c` takes `nopic` after the target. Their `_main.c` halves call the
