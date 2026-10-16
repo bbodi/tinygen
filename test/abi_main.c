@@ -28,6 +28,15 @@ double tg_many(int i0, int i1, int i2, int i3, int i4, int i5, int i6, int i7, i
                struct F3 h, signed char c, unsigned short s, struct A16 a16, struct LI li);
 int tg_small(signed char a, unsigned short b, short c);
 signed char tg_small_ret(int x);
+struct B3 { unsigned char x[3]; };
+int tg_stk_b3(long long a0, long long a1, long long a2, long long a3, long long a4, long long a5,
+              long long a6, long long a7, struct B3 s, int after);
+int tg_call_stk_b3(void);
+int c_stk_b3(long long a0, long long a1, long long a2, long long a3, long long a4, long long a5,
+             long long a6, long long a7, struct B3 s, int after) {
+	(void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6; (void)a7;
+	return s.x[0] + s.x[1] + s.x[2] + after;
+}
 // The packed records of abi.c's build_pk
 #pragma pack(push, 1)
 struct PA { unsigned char a; float b; };
@@ -542,6 +551,11 @@ int main(void) {
 	}
 	CHECK(tg_small(-100, 60000, -30000) == 29900);
 	CHECK(tg_small_ret(0x1234fe) == -2);
+	{
+		struct B3 b3 = {{1, 2, 3}};
+		CHECK(tg_stk_b3(0, 1, 2, 3, 4, 5, 6, 7, b3, 36) == 42);
+		CHECK(tg_call_stk_b3() == 42);
+	}
 	CHECK(tg_call_c() == expect_call_c());
 	test_pk();
 	{
