@@ -17,7 +17,7 @@ typedef struct tyg_proc   tgProc;
 // Target
 //
 // The target of the module being built or written on this thread. Lowering asks
-// these instead of taking the module, like the code it was ported from.
+// these instead of taking the module.
 ////////////////////////////////////////////////////////////////
 
 static TG_THREAD_LOCAL tyg_target tg_cur_target;
@@ -155,7 +155,7 @@ enum {
 
 	tgOp_MemCopy,    // copy imm bytes: [a] <- [b], a and b are pointer vregs
 	tgOp_MemMove,    // like MemCopy but the ranges may overlap
-	tgOp_MemZero,    // zero imm bytes at [a]
+	tgOp_MemZero,    // zero imm bytes at mem
 	tgOp_MemCopyDyn, // copy c bytes, c is a vreg
 	tgOp_MemMoveDyn,
 	tgOp_MemSetDyn,  // set c bytes at [a] to the byte b
@@ -294,7 +294,8 @@ enum {
 	tgT_Ptr,
 	tgT_Array,
 	tgT_Record, // fields at offsets, which may overlap
-	tgT_F80,    // long double: x87 extended on x86-64 SysV, unsupported elsewhere (see types.c)
+	tgT_F80,    // long double: x87 extended on x86-64 SysV, a double on arm64 macOS and Windows,
+	            // unsupported on arm64 Linux (see types.c)
 };
 
 struct tyg_type {

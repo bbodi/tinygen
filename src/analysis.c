@@ -3,14 +3,14 @@
 TG_ARRAY(tgI8Array, i8);
 TG_ARRAY(tgMemArray, tgMem);
 
-// An array of n zeroed items in the current arena: array_make(xb_allocator(), n).
+// An array of n zeroed items in the current arena.
 #define tg_array_make(a, n) do { \
 	memset((a), 0, sizeof(*(a))); \
 	(a)->arena = tg_arena(); \
 	tg_array_resize((a), (n)); \
 } while (0)
 
-// array_make(xb_allocator(), n, cap).
+// An array of n zeroed items in the current arena, with room for c.
 #define tg_array_make_cap(a, n, c) do { \
 	tg_array_make((a), (n)); \
 	tg_array_reserve((a), (c)); \
@@ -419,7 +419,7 @@ typedef struct tgCleanupCover { i32 local; u64 bytes; } tgCleanupCover;
 TG_ARRAY(tgCleanupAtArray, tgCleanupAt);
 TG_ARRAY(tgCleanupCoverArray, tgCleanupCover);
 
-// What the lambdas of tg_cleanup_proc share.
+// The state the helpers of tg_cleanup_proc share.
 typedef struct tgCleanup {
 	tgProc *         p;
 	tgI32Array       uses;
@@ -1715,7 +1715,7 @@ TG_ARRAY(tgAllocEventArray, tgAllocEvent);
 typedef struct tgAllocActive { u32 v; i32 next; bool dead; i32 len; } tgAllocActive;
 TG_ARRAY(tgAllocActiveArray, tgAllocActive);
 
-// The state the lambdas of tg_alloc_regs captured.
+// The state the helpers of tg_alloc_regs share.
 typedef struct tgAllocCtx {
 	tgProc *           p;
 	tgRegAlloc *       R;
@@ -2543,7 +2543,7 @@ TG_INTERNAL void tg_alloc_regs(tgProc *p, tgRegAlloc *R, tgRegPools pools, tgReg
 	tg_array_free(&X.expire);
 }
 
-// What the lambda of tg_alloc_slots captured.
+// The state the helper of tg_alloc_slots shares.
 typedef struct tgSlotCtx {
 	tgRegAlloc *  R;
 	tgVregFacts const *fx;

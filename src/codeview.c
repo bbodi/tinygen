@@ -1,8 +1,7 @@
 // CodeView debug info in .debug$S (symbols, line tables) and .debug$T (types), from which
 // the linker builds the PDB.
 //
-// Ported from x64_codeview.cpp, which described its own types; here the types are the
-// front end's tyg_dtype, written as MSVC and clang-cl write C types:
+// The types are the front end's tyg_dtype, written as MSVC and clang-cl write C types:
 //   - base types are the predefined simple type indices (T_INT4, T_REAL64, T_RCHAR, ...), and a
 //     pointer to one is the simple type in 64-bit pointer mode (0x600 | index);
 //   - const and volatile are LF_MODIFIER, folded into the LF_POINTER of a qualified pointer;

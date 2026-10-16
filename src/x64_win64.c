@@ -1,8 +1,8 @@
 // Windows x64: the Win64 calling convention, matching clang's WinX86_64ABIInfo for C and
 // LLVM's CC_X86_Win64_C, and the Windows prologue and epilogue.
 //
-// Ported from x64_win64.cpp, which classified its LLVM-lowered types; here the
-// classifier works on tyg_type, which has no vectors, i128 or language specific calling conventions.
+// The classifier works on tyg_type, which has no vectors, i128 or language specific calling
+// conventions.
 //
 // Every argument takes one slot: the first four go in rcx, rdx, r8, r9 or
 // xmm0-xmm3 by position, the rest on the stack above a 32 byte shadow area the
@@ -187,8 +187,7 @@ TG_INTERNAL tgAbiFunc *tg_abi_compute_win64(tyg_sig const *sig, tyg_type const *
 }
 
 // The C varargs of a call, args[arg_index..arg_count), after the fixed arguments. Returns the
-// stack size of the call. The original passed only scalars; an aggregate goes like a fixed parameter
-// of its type, in a register or slot when it has 1, 2, 4 or 8 bytes, else by pointer to a copy.
+// stack size of the call. An aggregate goes like a fixed parameter of its type, in a register or slot when it has 1, 2, 4 or 8 bytes, else by pointer to a copy.
 TG_INTERNAL i32 tg_win64_varargs(tgProc *p, tgAbiFunc *abi, tgCallArgArray *call_args,
                                  tgArgValue const *args, isize arg_index, isize arg_count) {
 	i32 slot = abi->gpr_count;

@@ -1,10 +1,8 @@
 // The arm64 calling conventions of Apple and of Linux (AAPCS64), which must match clang's
 // because procedures from both compilers call each other.
 //
-// Ported from a64_abi.cpp, which classified its LLVM-lowered types (lbAbiArm64 in
-// llvm_abi.cpp), then mirrored LLVM's CC_AArch64_DarwinPCS or CC_AArch64_AAPCS to assign the
-// pieces. Here the classifier works on tyg_type directly, following clang's AArch64ABIInfo
-// for C; the piece and register assignment machinery is the original's:
+// The classifier follows clang's AArch64ABIInfo for C, and the assignment of the pieces
+// follows LLVM's CC_AArch64_DarwinPCS and CC_AArch64_AAPCS:
 //   - a scalar takes the next x or v register, then a stack slot of its own size on Apple,
 //     of at least 8 bytes on Linux
 //   - a homogeneous float aggregate of up to four members takes consecutive v registers,

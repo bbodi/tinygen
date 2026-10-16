@@ -30,7 +30,7 @@ tyg_module *tyg_module_new(tyg_target target, const char *source_name) {
 	                  (target.arch == TYG_ARCH_X64 || target.arch == TYG_ARCH_ARM64)) ||
 	                 (target.os == TYG_OS_WINDOWS && target.arch == TYG_ARCH_X64);
 	if (!supported) {
-		// Windows on arm64 is not ported
+		// Windows on arm64 has no ABI or object writer yet
 		return NULL;
 	}
 	tgModule *m = (tgModule *)calloc(1, sizeof(tgModule));

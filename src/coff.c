@@ -1,9 +1,7 @@
 // COFF (x86-64) relocatable object writer for Windows, with .pdata/.xdata unwind info and
 // CodeView debug info (codeview.c).
 //
-// Ported from x64_coff.cpp, which wrote the object to a path; tinygen writes it into a
-// byte buffer, which api.c writes to the file. The RAD Debugger section (.raddbg), which the original
-// filled with its own type views, is dropped.
+// The object goes into a byte buffer, which api.c writes to the file.
 
 typedef u8 tgCoffSec;
 enum {

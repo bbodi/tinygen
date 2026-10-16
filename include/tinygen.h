@@ -47,11 +47,7 @@ typedef struct tyg_target {
 
 /* tyg_target.debug_info. DEFAULT is the platform's format: DWARF, CodeView on Windows for
  * the Microsoft debuggers. DWARF writes DWARF on Windows too, in the COFF object, for gdb,
- * lldb and the MinGW toolchain. lldb reads CodeView, but on Windows it shows variables in
- * xmm registers and in the low part of a register wrongly, as it does clang's. A CodeView
- * variable also has the type a typedef names, not the typedef, so every debugger shows
- * `Link *` where DWARF shows a typedef `Link?`. Link with GNU ld or with
- * lld-link /debug:dwarf, which keep the DWARF in the executable. */
+ * lldb and the MinGW toolchain. README.md lists what each debugger shows of each format. */
 typedef enum tyg_debug_format {
 	TYG_DEBUG_NONE    = 0,
 	TYG_DEBUG_DEFAULT = 1,

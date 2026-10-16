@@ -1,7 +1,5 @@
 // The public types for the ABI (tyg_type), signatures (tyg_sig) and debug types
 // (tyg_dtype). They live in the module's arena, as long as the module.
-//
-// New in tinygen: the original backend took these from its front end's types.
 
 #include <stdarg.h>
 

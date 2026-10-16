@@ -2,12 +2,8 @@
 // builds a procedure's IR in between, including call lowering, returns, parameters,
 // C varargs and the per-procedure debug info.
 //
-// The IR helpers (tg_new_vreg ... tg_ptr_add_const) are ported from xb_gen.cpp, the call,
-// return and parameter lowering and the debug scopes from xb_gen_stmt.cpp, and the
-// procedure's creation and lowering from xb_backend.cpp (xb_new_proc, xb_lower_proc).
-//
-// The original bails out of a procedure with a longjmp. The public API cannot: the caller's code
-// is not inside a setjmp. So a failure records p->fail_reason (the first one wins), every
+// A failure cannot leave the builder with a longjmp, since the caller's code is not inside
+// a setjmp. So a failure records p->fail_reason (the first one wins), every
 // builder call after it is a no-op that returns a fresh dummy value, and tyg_proc_end
 // discards the procedure and reports the reason.
 
@@ -565,8 +561,8 @@ TG_INTERNAL u32 tg_ptr_add_const(tgProc *p, u32 ptr, i64 offset) {
 
 // A thread local's storage. On x86-64 Linux an executable reaches it from the thread pointer
 // (initial exec), anything else may be loaded with dlopen, so it asks __tls_get_addr (general
-// dynamic) like LLVM. The original decides by the build mode; tinygen does not know it, so position
-// independent code takes the general dynamic way, which also works in an executable.
+// dynamic) like LLVM. tinygen does not know the build mode, so position independent code
+// takes the general dynamic way, which also works in an executable.
 TG_INTERNAL tgMem tg_tls_mem(tgProc *p, i32 sym) {
 	tgInstr in;
 	if (tg_is_darwin() || tg_is_arm64()) {
@@ -600,7 +596,7 @@ TG_INTERNAL tgMem tg_tls_mem(tgProc *p, i32 sym) {
 }
 
 ////////////////////////////////////////////////////////////////
-// Debug info, from xb_gen_stmt.cpp
+// Debug info
 ////////////////////////////////////////////////////////////////
 
 TG_INTERNAL void tg_set_debug_loc(tgProc *p, i32 file_id, i32 line, i32 column) {
@@ -635,10 +631,10 @@ TG_INTERNAL void tg_close_scope(tgProc *p) {
 }
 
 ////////////////////////////////////////////////////////////////
-// Calls, from xb_gen_stmt.cpp
+// Calls
 ////////////////////////////////////////////////////////////////
 
-// The sysv integer argument registers, as xb_sysv_int_regs in x64_abi.cpp
+// The SysV integer argument registers
 static u8 const tg_build_sysv_int_regs[6] = {RDI, RSI, RDX, RCX, R8, R9};
 
 // A scalar held in memory, for an ABI piece that takes part of it.
@@ -708,7 +704,7 @@ TG_INTERNAL tgMem tg_arg_mem(tgProc *p, u32 val, tgMem mem) {
 	return mem;
 }
 
-// The variadic arguments of a C call on arm64, from the original's a64_varargs: on macOS each one
+// The variadic arguments of a C call on arm64: on macOS each one
 // goes onto the stack after the fixed arguments, never into a register, a scalar in an 8
 // byte slot and an aggregate as its bytes rounded up to 8 (aligned to 16 when its type is),
 // or by pointer to a copy when it is larger than 16 bytes and not a float aggregate, like
@@ -966,7 +962,7 @@ TG_INTERNAL u32 tg_emit_call_internal(tgProc *p, tgAbiFunc *abi, tyg_type const 
 }
 
 ////////////////////////////////////////////////////////////////
-// Returns and parameters, from xb_gen_stmt.cpp
+// Returns and parameters
 ////////////////////////////////////////////////////////////////
 
 // Returns the value `val`, or with val 0 the value in memory at `direct_result`, or nothing
@@ -1111,7 +1107,7 @@ TG_INTERNAL void tg_va_save_area(tgProc *p, tgAbiFunc *abi) {
 	}
 }
 
-// Receives the parameters, like xb_begin_proc: each one lands in a local, or for ByVal in
+// Receives the parameters: each one lands in a local, or for ByVal in
 // the incoming stack area, and p->param_vals holds its value (a scalar) or address.
 TG_INTERNAL void tg_begin_params(tgProc *p) {
 	tyg_sig const *sig = p->sig;
@@ -1187,13 +1183,12 @@ TG_INTERNAL void tg_begin_params(tgProc *p) {
 	}
 }
 
-// Finishes the body, like xb_end_proc.
+// Finishes the body.
 TG_INTERNAL void tg_end_proc(tgProc *p) {
 	isize bi;
 	if (!tg_curr_terminated(p)) {
-		// The original returns from a procedure without results and marks the end of any other
-		// unreachable. C lets a non-void function reach its end as long as the caller does
-		// not use the value, so every procedure returns here.
+		// C lets a non-void function reach its end as long as the caller does not use the
+		// value, so every procedure returns here, not only one without results.
 		tgMem none;
 		memset(&none, 0, sizeof(none));
 		tg_emit_ret(p, false, 0, none);
@@ -1425,7 +1420,7 @@ TG_INTERNAL bool tg_val_param_ptr_local(tgProc *p, u32 v, i32 *out) {
 // Procedures
 ////////////////////////////////////////////////////////////////
 
-// Starts building a procedure, like xb_new_proc and xb_begin_proc.
+// Starts building a procedure.
 tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 	tgProc *p;
 	char const *reason = NULL;
@@ -1521,8 +1516,7 @@ int tyg_proc_end(tyg_proc *p) {
 		return 1;
 	}
 
-	// like xb_lower_proc: the procedure counts as defined from here on, and calls to itself
-	// see that
+	// the procedure counts as defined from here on, and calls to itself see that
 	m->symbols.data[p->sym].section = tgSection_Text;
 	m->symbols.data[p->sym].flags |= tgSymbolFlag_Func;
 
@@ -2824,8 +2818,8 @@ void tyg_debug_proc(tyg_proc *p, const char *name, tyg_file file, int line, cons
 	p->decl_file = file;
 	p->decl_line = line;
 	p->debug_type = type;
-	// like xb_begin_proc, the entry starts on the declaration's line, before the
-	// parameters' code that tyg_proc_begin put there
+	// the entry starts on the declaration's line, before the parameters' code that
+	// tyg_proc_begin put there
 	if (line > 0 && file > 0 && p->last_line <= 0 && p->blocks.count > 0) {
 		tgBlock *entry = p->blocks.data[0];
 		tgInstr loc = tg_instr(tgOp_Loc);
@@ -2855,7 +2849,7 @@ void tyg_scope_end(tyg_proc *p) {
 	tg_close_scope(p);
 }
 
-// Like xb_add_debug_var.
+// Records a debug variable or parameter of the current scope.
 TG_INTERNAL void tg_add_debug_var(tgProc *p, char const *name, tyg_dtype const *t, tyg_addr where, tyg_file file, int line, bool is_param, bool in_prologue) {
 	tgDebugVar v;
 	tgMem m;
@@ -2905,8 +2899,8 @@ TG_INTERNAL void tg_add_debug_var(tgProc *p, char const *name, tyg_dtype const *
 		tg_fail(p, "debug variable: invalid address kind");
 		return;
 	}
-	// The original keeps a local's offset in frame_offset_fixup, which the lowering adds the
-	// local's frame offset to
+	// a local's offset goes in frame_offset_fixup, which the lowering adds the local's frame
+	// offset to
 	if (v.local >= 0) v.frame_offset_fixup = v.offset;
 	v.name = tg_module_str(p->m, name);
 	v.type = t;

@@ -292,8 +292,7 @@ TG_INTERNAL void x64_movaps(tgAsm *a, u8 x, u8 y) {
 	if (x != y) tg_enc(a, TG_0F, 0x28, x, tg_r(y), 0);
 }
 
-// A machine memory operand for an IR memory reference. May clobber `scratch` (R11 by default
-// in the original).
+// A machine memory operand for an IR memory reference. May clobber `scratch`.
 TG_INTERNAL tgOpnd tg_mem_opnd(tgLower *L, tgMem m, u8 scratch);
 
 // A gpr holding v: its own, or `scratch` loaded with it. Narrow values come extended as `ext`
@@ -677,7 +676,7 @@ TG_INTERNAL void x64_copy_fwd(tgLower *L, i64 n) {
 	}
 }
 
-// The lambdas of x64_helper.
+// The helpers of x64_helper.
 TG_INTERNAL void x64_helper_here(tgAsm *a, i64 j) { tg_patch_rel32(a, j, tg_pos(a)); }
 TG_INTERNAL void x64_helper_cmp_n(tgAsm *a, i32 k) { tg_alu_rm_imm(a, ALU_CMP, 8, tg_r(RCX), k); }
 // r = base + n, the end of a range

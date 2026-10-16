@@ -1,8 +1,7 @@
 // ELF64 relocatable object writer for x86-64 and arm64, with .eh_frame. The DWARF sections
 // come from dwarf.c.
 //
-// Ported from x64_elf.cpp, which wrote the object to a path; tinygen writes it into a
-// byte buffer, which api.c writes to the file. The debug sections and their relocations are
+// The object goes into a byte buffer, which api.c writes to the file. The debug sections and their relocations are
 // only in the object with debug info.
 
 enum {

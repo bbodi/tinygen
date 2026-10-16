@@ -1,11 +1,6 @@
 // The module: symbols, data in sections, relocations in data, debug files, and
 // appending lowered procedures to .text.
 //
-// Ported from the module-level parts of xb_gen.cpp (symbols, sections),
-// xb_globals.cpp (xb_section_reserve), xb_dwarf.cpp (xb_file_id) and
-// xb_backend.cpp (xb_append_lowered, xb_lower_start). The shadow modules, which
-// replayed these writes, and the thread pool are gone.
-//
 // Every array of the module lives on the heap (arena = NULL). Strings the module
 // keeps (symbol and file names) are copies in m->arena.
 

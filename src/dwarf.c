@@ -1,8 +1,8 @@
 // DWARF 4 debug info, shared by the ELF and Mach-O object writers, and the byte buffer
 // helpers every object writer uses.
 //
-// Ported from xb_dwarf.cpp. The types are tinygen's debug types (tyg_dtype), written
-// the way clang -gdwarf-4 writes C types, instead of its own.
+// The types are tinygen's debug types (tyg_dtype), written the way clang -gdwarf-4 writes
+// C types.
 
 TG_INTERNAL void tgb_u8 (tgBytes *b, u8  v) { tg_array_add(b, v); }
 TG_INTERNAL void tgb_u16(tgBytes *b, u16 v) { tg_array_add_elems(b, (u8 *)&v, 2); }

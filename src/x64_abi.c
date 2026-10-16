@@ -1,9 +1,7 @@
 // System V x86-64 calling convention, matching what clang produces for C.
 //
-// Ported from x64_abi.cpp, which classified its LLVM-lowered types (a port of
-// lbAbiAmd64SysV) and then assigned registers like LLVM's CC_X86_64_C. Here the
-// classifier works on tyg_type directly, following clang's X86_64ABIInfo::classify
-// for C; the piece and register assignment machinery is the original's.
+// The classifier follows clang's X86_64ABIInfo::classify for C, and the assignment of the
+// pieces to registers follows LLVM's CC_X86_64_C.
 //
 // tg_abi_compute dispatches arm64 to a64_abi.c and Win64 to x64_win64.c.
 

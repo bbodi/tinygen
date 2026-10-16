@@ -1,7 +1,6 @@
 // Mach-O relocatable object writer for macOS, arm64 and x86-64.
 //
-// Ported from xb_macho.cpp, which wrote the object to a path; tinygen writes it into a
-// byte buffer, which api.c writes to the file.
+// The object goes into a byte buffer, which api.c writes to the file.
 //
 // All sections live in one unnamed segment, as in the objects clang writes. A section's
 // file offset mirrors its address, so `offset - fileoff == addr`.
@@ -71,8 +70,7 @@ enum {
 	MACHO_N_WEAK_DEF = 0x80,
 };
 
-// The minimum macOS versions the objects ask for, as the original's default minimum_os_version_string:
-// 11.0 is the first macOS on arm64; 10.13 is the oldest x86-64 macOS current toolchains target.
+// The minimum macOS versions the objects ask for: 11.0 is the first macOS on arm64; 10.13 is the oldest x86-64 macOS current toolchains target.
 // clang itself writes the host's version.
 enum {
 	MACHO_MIN_MACOS_ARM64  = (11 << 16),
@@ -232,7 +230,7 @@ TG_INTERNAL int macho_sort_key_cmp(void const *a, void const *b) {
 	return x->index < y->index ? -1 : x->index > y->index ? 1 : 0;
 }
 
-// What the lambdas of xb_write_macho captured.
+// The state the helpers of tg_write_macho share.
 typedef struct machoWriter {
 	tgModule *        m;
 	machoOutSection   rodata_out;

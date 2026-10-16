@@ -5,8 +5,9 @@ A tiny, fast code generator for debug builds, as a C99 library.
 A front end builds procedures in a small IR through `include/tinygen.h`.
 tinygen lowers them to machine code and writes an object file with debug
 info. The object follows the platform's C ABI, so it links with objects from
-any C compiler. tinygen does not optimize; it exists to make debug builds
-fast.
+any C compiler. tinygen exists to make debug builds fast. It only optimizes
+where that is cheap and local: it folds constants, reuses repeated loads,
+forwards copies, pairs loads and removes dead values.
 
 tinygen started as a fast debug backend for a compiler, and is now a
 standalone C99 library. Any host writes objects for every target.
@@ -21,6 +22,21 @@ standalone C99 library. Any host writes objects for every target.
 
 - 🔀 Any host writes objects for every target
 - 🐞 Debuggers: gdb, lldb, Visual Studio, WinDbg, RAD
+
+### Debug info formats
+
+`tyg_target.debug_info` picks the format. The default is DWARF, and CodeView
+on Windows for the Microsoft debuggers. `TYG_DEBUG_DWARF` writes DWARF on
+Windows too, in the COFF object, for gdb, lldb and the MinGW toolchain. Link
+such an object with GNU ld, or with `lld-link /debug:dwarf`, which keep the
+DWARF in the executable.
+
+The two formats differ in what the debuggers show:
+
+- lldb reads CodeView, but on Windows it shows variables in xmm registers and
+  in the low part of a register wrongly. It does the same with clang's objects.
+- A CodeView variable has the type that a typedef names, not the typedef. So
+  every debugger shows `Link *` where DWARF shows the typedef `Link`.
 
 ## Build
 

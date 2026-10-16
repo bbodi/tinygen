@@ -1,7 +1,5 @@
 // Lowering: tg IR -> arm64 machine code.
 //
-// Ported from a64_lower.cpp.
-//
 // Registers come from tg_alloc_regs (analysis.c). An interval takes x0-x8, v0-v7 or v20-v31
 // when no call happens in it, x19-x28 or d8-d15 otherwise. The rest live in 8 byte stack slots.
 // A constant with one definition is materialized at each use, or becomes the instruction's
@@ -87,14 +85,11 @@ typedef struct a64Addr {
 	i64 off;
 } a64Addr;
 
-// The original a64_check_proc rejected the x86 operations (cpuid, xgetbv, valgrind), which have no
-// arm64 form. Nothing in tinygen's public API makes them.
-
 // Whether a thread local's address comes from a call: macOS calls the variable's TLV
 // descriptor, and on Linux anything but an executable may be loaded with dlopen, so it calls
 // the TLS descriptor's resolver (general dynamic) like LLVM. An executable adds the offset in
-// the variable's GOT entry to the thread pointer (initial exec). The original decided by the build
-// mode; tinygen takes position independent code as the sign of a shared library, as
+// the variable's GOT entry to the thread pointer (initial exec). tinygen does not know the
+// build mode, so it takes position independent code as the sign of a shared library, as
 // tg_tls_mem in build.c does.
 TG_INTERNAL bool a64_tls_calls(void) {
 	return tg_is_darwin() || tg_is_pic();
@@ -122,8 +117,7 @@ TG_INTERNAL bool a64_clobbers(tgInstr const *in) {
 	return false;
 }
 
-// One saved pair: lo at x29+off+8, hi at x29+off. The original a64_for_each_pair called a lambda
-// for each; here they are listed in the same order.
+// One saved pair: lo at x29+off+8, hi at x29+off.
 typedef struct a64Pair { u8 lo, hi; bool fp; i32 off; } a64Pair;
 
 TG_INTERNAL i32 a64_list_pairs(u32 pairs, a64Pair out[9]) {
@@ -650,7 +644,7 @@ TG_INTERNAL void a64_lower_call(a64Lower *L, tgCall const *c, bool is_ret) {
 		}
 		case tgCallArg_XmmMem: {
 			if (arg->mem.kind == tgMem_Local && L->local_reg.data[arg->mem.base] >= 0) {
-				// a scalar local in a register; the original never made one an XmmMem argument
+				// a scalar local in a register
 				i8 lr = L->local_reg.data[arg->mem.base];
 				if (lr >= TG_FREG) a64_fmov_reg(a, arg->reg, (u8)(lr - TG_FREG));
 				else               a64_fmov_to_fp(a, arg->reg, (u8)lr);
@@ -675,7 +669,7 @@ TG_INTERNAL void a64_lower_call(a64Lower *L, tgCall const *c, bool is_ret) {
 		if (r->dst.kind == tgMem_Local && L->local_reg.data[r->dst.base] >= 0) {
 			i8 lr = L->local_reg.data[r->dst.base];
 			if (lr >= TG_FREG) {
-				// The original a64 lowering assumed a gpr here; a float local takes its value as it is
+				// a float local lives in a v register: the value moves there from an x or v register
 				u8 vr = (u8)(lr - TG_FREG);
 				if (r->loc == tgLoc_Gpr) a64_fmov_to_fp(a, vr, r->reg);
 				else if (vr != r->reg)   a64_fmov_reg(a, vr, r->reg);
@@ -733,7 +727,7 @@ TG_INTERNAL void a64_jump(a64Lower *L, i32 block) {
 	tg_array_add(&L->fixups, f);
 }
 
-// The branch to `block` when the condition is `when`; the original's jump_if lambda in a64_branch.
+// The branch to `block` when the condition is `when`.
 TG_INTERNAL void a64_jump_if(a64Lower *L, a64Cond c, i32 test, bool when, i32 block) {
 	tgAsm *a = &L->a;
 	a64Fixup fx;
@@ -743,7 +737,7 @@ TG_INTERNAL void a64_jump_if(a64Lower *L, a64Cond c, i32 test, bool when, i32 bl
 	tg_array_add(&L->fixups, fx);
 }
 
-// Skips the next instruction when the condition is `when`; the original's skip_if lambda.
+// Skips the next instruction when the condition is `when`.
 TG_INTERNAL void a64_skip_if(a64Lower *L, a64Cond c, i32 test, bool when) {
 	tgAsm *a = &L->a;
 	if (test >= 0) a64_cb_skip(a, when, (u8)test);
@@ -815,7 +809,7 @@ TG_INTERNAL i32 a64_logical_imm_any(u64 k, i32 size) {
 	return a64_logical_imm(rep);
 }
 
-// One piece of an inline copy: the original's local struct Chunk.
+// One piece of an inline copy.
 typedef struct a64CopyChunk { i32 size; i64 off; u8 reg; bool fp; } a64CopyChunk;
 
 // Whether the load or store `in` reads its address from the add folded into it.
