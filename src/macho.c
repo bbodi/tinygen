@@ -587,12 +587,19 @@ TG_INTERNAL bool tg_write_macho(tgModule *m, tgBytes *out) {
 	i64 sect_addr[machoOut_COUNT];
 	memset(sect_number, 0, sizeof(sect_number));
 	memset(sect_addr, 0, sizeof(sect_addr));
+	// An empty section stays when a symbol is defined in it. __text always stays, like
+	// clang's: the debug info's low_pc refers to it.
+	bool keep[machoOut_COUNT];
+	memset(keep, 0, sizeof(keep));
+	keep[machoOut_Text] = true;
+	for (isize i = 0; i < w.out_syms.count; i++) {
+		if (w.out_syms.data[i].out_section >= 0) keep[w.out_syms.data[i].out_section] = true;
+	}
 	i32 nsects = 0;
 	i64 addr = 0;
 	i64 file_end_addr = 0;
 	for (isize i = 0; i < machoOut_COUNT; i++) {
-		// __text stays even when empty, like clang's: the debug info's low_pc refers to it
-		if (sec_size[i] == 0 && i != machoOut_Text) continue;
+		if (sec_size[i] == 0 && !keep[i]) continue;
 		addr = tg_align_up(addr, sec_align[i]);
 		sect_addr[i] = addr;
 		sect_number[i] = ++nsects;

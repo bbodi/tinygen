@@ -750,19 +750,25 @@ static void build_store_fwd(void) {
 	check(tyg_proc_end(p));
 }
 
-// A module with data and no code, with the target's debug info, still makes an object
+// A module with data and no code still makes an object, with the target's debug info and
+// without. tg_no_data is zero bytes long, the only symbol in its section.
 static void check_data_only(tyg_target t) {
 	static const int v = 5;
-	tyg_module *dm = tyg_module_new(t, "data.tg");
-	if (!dm) { fprintf(stderr, "no module\n"); exit(1); }
-	const uint8_t *bytes;
-	size_t size;
-	if (tyg_data(dm, tyg_symbol(dm, "tg_only_data", TYG_SYM_GLOBAL), TYG_SECTION_DATA, &v, 4, 4) != 0 ||
-	    tyg_module_emit(dm, &bytes, &size) != 0) {
-		fprintf(stderr, "data only module: %s\n", tyg_error(dm));
-		exit(1);
+	for (int debug = 0; debug < 2; debug++) {
+		tyg_target dt = t;
+		if (!debug) dt.debug_info = TYG_DEBUG_NONE;
+		tyg_module *dm = tyg_module_new(dt, "data.tg");
+		if (!dm) { fprintf(stderr, "no module\n"); exit(1); }
+		const uint8_t *bytes;
+		size_t size;
+		if (tyg_data(dm, tyg_symbol(dm, "tg_only_data", TYG_SYM_GLOBAL), TYG_SECTION_DATA, &v, 4, 4) != 0 ||
+		    tyg_data(dm, tyg_symbol(dm, "tg_no_data", TYG_SYM_GLOBAL), TYG_SECTION_RODATA, NULL, 0, 1) != 0 ||
+		    tyg_module_emit(dm, &bytes, &size) != 0) {
+			fprintf(stderr, "data only module: %s\n", tyg_error(dm));
+			exit(1);
+		}
+		tyg_module_free(dm);
 	}
-	tyg_module_free(dm);
 }
 
 int main(int argc, char **argv) {
