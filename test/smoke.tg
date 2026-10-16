@@ -1,0 +1,57 @@
+int tg_add(int a, int b) { return a + b; }
+
+long long tg_fib(long long n) { return n < 2 ? n : tg_fib(n - 1) + tg_fib(n - 2); }
+
+long long tg_sum(long long n) { long long s = 0, i = 0;
+    while (i < n) {
+        s += i; i++; }
+    return s; }
+
+struct V tg_vscale(struct V v, double k) { return (struct V){v.x * k, v.y * k}; }
+
+
+struct Big { long long a, b, c; };
+long long tg_big_sum(struct Big b) { return b.a + b.b + b.c; }
+
+
+
+
+
+int tg_greet(int n) { return printf(tg_fmt, tg_msg, n, 1.5); }
+
+
+
+
+
+
+
+
+
+double tg_vmix(int n, ...) { /* n pairs of (double, struct P), then a struct Big */ }
+
+
+
+
+
+
+
+
+
+long long tg_call_cb(long long (*cb)(long long), long long x) { return cb(x) + 1; }
+
+
+
+typedef struct Point { int x, y; } Point;
+enum Color { RED, GREEN = 5, BLUE };
+struct Flags { unsigned a : 3; unsigned b : 5; int c; };
+struct Node { struct Node *next; const char *name; double vals[3]; enum Color color; struct Flags flags; union { int i; float f; }; };
+Point tg_origin = {10, 20};
+
+long long tg_node_sum(struct Node *n, Point p) {
+    long long t = p.x + p.y;
+    {
+        int inner = n->flags.c;
+        t += inner + n->color;
+    }
+    return t;
+}

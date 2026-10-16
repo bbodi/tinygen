@@ -1,0 +1,23 @@
+// tinygen as one translation unit.
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS // the Windows CRT deprecates fopen and friends
+#endif
+#include "tg_ir.h"
+#include "x64_encode.c"
+#include "a64_encode.c"
+#include "types.c"
+#include "a64_abi.c"
+#include "x64_abi.c"
+#include "analysis.c"
+#include "x64_lower.c"
+#include "a64_lower.c"
+#include "x64_win64.c"
+#include "module.c"
+#include "dwarf.c"
+#include "elf.c"
+#include "macho.c"
+#include "coff.c"
+#include "codeview.c"
+#include "dump.c"
+#include "build.c"
+#include "api.c"
