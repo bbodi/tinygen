@@ -603,10 +603,9 @@ TG_INTERNAL void a64_brk(tgAsm *a, u16 imm) {
 // them, as on a generic Linux cpu, read-modify-writes are exclusive load and store loops.
 ////////////////////////////////////////////////////////////////
 
-// The original asked the target features on Linux. tinygen has none yet, so it assumes LSE (ARMv8.1)
-// everywhere; the exclusive loops stay for when a target feature can turn it off.
+// Linux arm64 targets include ARMv8.0 cpus, such as the Cortex-A53 and A72, which lack LSE.
 TG_INTERNAL bool a64_has_lse(void) {
-	return true;
+	return tg_is_darwin();
 }
 
 enum {

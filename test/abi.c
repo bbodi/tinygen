@@ -1,9 +1,9 @@
 // Builds functions that exercise the calling convention and the lowering against C code
 // from the system compiler: float aggregates, small, packed and 16 byte aligned structs, results in
 // memory, arguments past the registers, char and short, C varargs both ways, thread locals,
-// atomics, alloca, large frames, a branch over more code than a conditional branch reaches, and
-// long double (x87 on x86-64 Linux and macOS, a double on arm64 macOS and Windows, an error on
-// arm64 Linux).
+// atomics at every width, alloca, large frames, a branch over more code than a conditional
+// branch reaches, and long double (x87 on x86-64 Linux and macOS, a double on arm64 macOS and
+// Windows, an error on arm64 Linux).
 // abi_main.c holds the C half and checks the results.
 //
 //   cc -std=c99 -Iinclude test/abi.c src/tinygen.c -o abi
@@ -570,6 +570,37 @@ static void build_misc(void) {
 	check(tyg_proc_end(p));
 }
 
+// For each width N in 8, 16, 32, 64 and each read-modify-write op:
+//   uintN_t tg_rmw_<op>_N(uintN_t *p, uintN_t v) { return the old *p; *p = *p op v; }
+//   uintN_t tg_cas_N(uintN_t *p, uintN_t expected, uintN_t desired, int *ok)
+static void build_atomics(void) {
+	static const struct { const char *name; tyg_rmw op; } ops[7] = {
+		{"xchg", TYG_RMW_XCHG}, {"add", TYG_RMW_ADD}, {"sub", TYG_RMW_SUB}, {"and", TYG_RMW_AND},
+		{"or", TYG_RMW_OR}, {"xor", TYG_RMW_XOR}, {"nand", TYG_RMW_NAND},
+	};
+	static const tyg_scalar sizes[4] = {TYG_I8, TYG_I16, TYG_I32, TYG_I64};
+	char name[64];
+	for (int k = 0; k < 4; k++) {
+		const tyg_type *t = TI(sizes[k], 0);
+		int bits = 8 << k;
+		for (int i = 0; i < 7; i++) {
+			const tyg_type *ps[2] = {tyg_type_ptr(m), t};
+			snprintf(name, sizeof(name), "tg_rmw_%s_%d", ops[i].name, bits);
+			tyg_proc *p = begin(name, t, ps, 2, 0, NULL);
+			tyg_ret(p, tyg_atomic_rmw(p, ops[i].op, tyg_at_val(tyg_param(p, 0), 0), tyg_param(p, 1)));
+			check(tyg_proc_end(p));
+		}
+		const tyg_type *ps[4] = {tyg_type_ptr(m), t, t, tyg_type_ptr(m)};
+		snprintf(name, sizeof(name), "tg_cas_%d", bits);
+		tyg_proc *p = begin(name, t, ps, 4, 0, NULL);
+		tyg_val ok = 0;
+		tyg_val old = tyg_atomic_cas(p, tyg_at_val(tyg_param(p, 0), 0), tyg_param(p, 1), tyg_param(p, 2), &ok);
+		st(p, TYG_I32, tyg_at_val(tyg_param(p, 3), 0), tyg_convert(p, TYG_ZEXT, TYG_I32, ok));
+		tyg_ret(p, old);
+		check(tyg_proc_end(p));
+	}
+}
+
 // long long tg_far(long long x): a conditional branch over about 4 MB of code
 static void build_far(void) {
 	const tyg_type *ps[1] = {T(TYG_I64)};
@@ -905,6 +936,7 @@ int main(int argc, char **argv) {
 	build_tls();
 	build_misc();
 	build_far();
+	build_atomics();
 	if (t.arch == TYG_ARCH_ARM64 && t.os == TYG_OS_LINUX) check_ld_unsupported();
 	else build_ld();
 	check(tyg_module_write(m, argc > 1 ? argv[1] : "abi.o"));

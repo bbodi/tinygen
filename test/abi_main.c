@@ -342,6 +342,88 @@ static int run_tls_thread(void) {
 }
 #endif
 
+// tg_rmw_<op>_N and tg_cas_N for N in 8, 16, 32, 64
+#define ATOMIC_DECLS(N) \
+	uint##N##_t tg_rmw_xchg_##N(uint##N##_t *p, uint##N##_t v); \
+	uint##N##_t tg_rmw_add_##N(uint##N##_t *p, uint##N##_t v); \
+	uint##N##_t tg_rmw_sub_##N(uint##N##_t *p, uint##N##_t v); \
+	uint##N##_t tg_rmw_and_##N(uint##N##_t *p, uint##N##_t v); \
+	uint##N##_t tg_rmw_or_##N(uint##N##_t *p, uint##N##_t v); \
+	uint##N##_t tg_rmw_xor_##N(uint##N##_t *p, uint##N##_t v); \
+	uint##N##_t tg_rmw_nand_##N(uint##N##_t *p, uint##N##_t v); \
+	uint##N##_t tg_cas_##N(uint##N##_t *p, uint##N##_t expected, uint##N##_t desired, int *ok);
+ATOMIC_DECLS(8)
+ATOMIC_DECLS(16)
+ATOMIC_DECLS(32)
+ATOMIC_DECLS(64)
+
+// Each op once on a cell that starts with its top bit set, against the same in C; the
+// bytes around the cell stay. A CAS that fails, then one that succeeds.
+#define ATOMIC_TEST(N) \
+	static void test_atomics_##N(void) { \
+		typedef uint##N##_t U; \
+		typedef U (*rmw_fn)(U *, U); \
+		static const rmw_fn fns[7] = {tg_rmw_xchg_##N, tg_rmw_add_##N, tg_rmw_sub_##N, tg_rmw_and_##N, \
+		                              tg_rmw_or_##N, tg_rmw_xor_##N, tg_rmw_nand_##N}; \
+		const U start = (U)0xA5C3F00F8E7D6B59ull | (U)((U)1 << (N - 1)); \
+		const U v = (U)0x3C96E1D2B4A58770ull; \
+		for (int i = 0; i < 7; i++) { \
+			struct { U lo, cell, hi; } c; \
+			c.lo = c.hi = (U)0x5A5A5A5A5A5A5A5Aull; \
+			c.cell = start; \
+			U old = fns[i](&c.cell, v); \
+			U want; \
+			switch (i) { \
+			case 0: want = v; break; \
+			case 1: want = (U)(start + v); break; \
+			case 2: want = (U)(start - v); break; \
+			case 3: want = (U)(start & v); break; \
+			case 4: want = (U)(start | v); break; \
+			case 5: want = (U)(start ^ v); break; \
+			default: want = (U)~(start & v); break; \
+			} \
+			CHECK(old == start && c.cell == want); \
+			if (old != start || c.cell != want) printf("  %d bit op %d: old %llx cell %llx, want %llx\n", N, i, \
+			                                          (unsigned long long)old, (unsigned long long)c.cell, (unsigned long long)want); \
+			CHECK(c.lo == (U)0x5A5A5A5A5A5A5A5Aull && c.hi == (U)0x5A5A5A5A5A5A5A5Aull); \
+		} \
+		U cell = start; \
+		int ok = -1; \
+		CHECK(tg_cas_##N(&cell, (U)(start - 1), v, &ok) == start && ok == 0 && cell == start); \
+		CHECK(tg_cas_##N(&cell, start, v, &ok) == start && ok == 1 && cell == v); \
+	}
+ATOMIC_TEST(8)
+ATOMIC_TEST(16)
+ATOMIC_TEST(32)
+ATOMIC_TEST(64)
+
+#ifndef _WIN32
+// Threads that add to one cell at once, through tg_rmw_add_32 and a tg_cas_64 loop, lose no update
+enum { CONTEND_THREADS = 4, CONTEND_ROUNDS = 100000 };
+static uint32_t contend_add;
+static uint64_t contend_cas;
+static void *contend_thread(void *arg) {
+	uint64_t seen = 0;
+	(void)arg;
+	for (int i = 0; i < CONTEND_ROUNDS; i++) {
+		tg_rmw_add_32(&contend_add, 1);
+		int ok = 0;
+		while (!ok) {
+			uint64_t cur = tg_cas_64(&contend_cas, seen, seen + 1, &ok);
+			seen = ok ? seen + 1 : cur;
+		}
+	}
+	return NULL;
+}
+static void test_atomics_contended(void) {
+	pthread_t th[CONTEND_THREADS];
+	for (int i = 0; i < CONTEND_THREADS; i++) CHECK(pthread_create(&th[i], NULL, contend_thread, NULL) == 0);
+	for (int i = 0; i < CONTEND_THREADS; i++) pthread_join(th[i], NULL);
+	CHECK(contend_add == CONTEND_THREADS * CONTEND_ROUNDS);
+	CHECK(contend_cas == (uint64_t)CONTEND_THREADS * CONTEND_ROUNDS);
+}
+#endif
+
 // the bit operations in plain C, for compilers without GCC's builtins (MSVC)
 static int popcount64(unsigned long long x) { int n = 0; for (; x; x &= x - 1) n++; return n; }
 static int ctz64(unsigned long long x) { int n = 0; while (!(x & 1)) { x >>= 1; n++; } return n; }
@@ -499,6 +581,13 @@ int main(void) {
 	}
 #ifdef HAVE_LD
 	test_ld();
+#endif
+	test_atomics_8();
+	test_atomics_16();
+	test_atomics_32();
+	test_atomics_64();
+#ifndef _WIN32
+	test_atomics_contended();
 #endif
 	CHECK(tg_far(5) == 250005);
 	CHECK(tg_far(-5) == -5);
