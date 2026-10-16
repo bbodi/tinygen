@@ -85,6 +85,7 @@ static int failures;
 
 struct LDS { long double x; };
 struct LDI { int i; long double x; };
+union LDU { long double x; struct { long long a, b; } p; };
 
 void tg_ld_ops(long double a, long double b, long double *out);
 int tg_ld_cmp(long double a, long double b);
@@ -107,6 +108,8 @@ long double tg_ld_from_f(float v);
 struct LDS tg_lds_twice(struct LDS v);
 struct LDI tg_ldi_make(int i, long double x);
 long double tg_ldi_sum(struct LDI v, struct LDS w);
+union LDU tg_ldu_make(long long a, long long b);
+long long tg_ldu_sum(union LDU u);
 long double tg_ld_call_c(long double x);
 long double tg_ld_vsum(int n, ...);
 extern long double tg_ld_g;
@@ -190,6 +193,9 @@ static void test_ld(void) {
 	struct LDI li = tg_ldi_make(-9, a);
 	CHECK(li.i == -9 && li.x == a);
 	CHECK(tg_ldi_sum(li, s) == -9 + a + a);
+	union LDU u = tg_ldu_make(11, 31);
+	CHECK(u.p.a == 11 && u.p.b == 31);
+	CHECK(tg_ldu_sum(u) == 42);
 
 	long double x = 0.1L;
 	ld_count = 0;

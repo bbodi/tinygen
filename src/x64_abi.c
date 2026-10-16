@@ -43,10 +43,10 @@ TG_INTERNAL void tg_sysv_unify(tgSysVClass *c, i64 word, tgRegClass newv) {
 		c->cls[word] = newv;
 	} else if (oldv == tgRegClass_Memory || newv == tgRegClass_Memory) {
 		c->cls[word] = tgRegClass_Memory;
-	} else if (oldv == tgRegClass_X87 || oldv == tgRegClass_X87Up || newv == tgRegClass_X87 || newv == tgRegClass_X87Up) {
-		c->cls[word] = tgRegClass_Memory;
 	} else if (oldv == tgRegClass_Int || newv == tgRegClass_Int) {
 		c->cls[word] = tgRegClass_Int;
+	} else if (oldv == tgRegClass_X87 || oldv == tgRegClass_X87Up || newv == tgRegClass_X87 || newv == tgRegClass_X87Up) {
+		c->cls[word] = tgRegClass_Memory;
 	} else {
 		c->cls[word] = tgRegClass_SSE;
 	}
