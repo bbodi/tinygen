@@ -37,10 +37,11 @@ fail() {
 	failed=1
 }
 
+# TG_CHECK_IR checks the IR after each pass; it does not change the objects.
 echo "building the generators"
-$cc -std=c99 -Wall -Iinclude test/smoke.c src/tinygen.c -o "$out/smoke"
-$cc -std=c99 -Wall -Iinclude test/abi.c src/tinygen.c -o "$out/abi"
-$cc -std=c99 -O2 -Wall -Iinclude test/bench.c src/tinygen.c -o "$out/bench"
+$cc -std=c99 -Wall -DTG_CHECK_IR -Iinclude test/smoke.c src/tinygen.c -o "$out/smoke"
+$cc -std=c99 -Wall -DTG_CHECK_IR -Iinclude test/abi.c src/tinygen.c -o "$out/abi"
+$cc -std=c99 -O2 -Wall -DTG_CHECK_IR -Iinclude test/bench.c src/tinygen.c -o "$out/bench"
 
 # Every object, written to a fixed path, since an object records the path it was written to.
 echo "emitting the objects"

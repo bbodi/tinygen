@@ -629,3 +629,47 @@ TG_INTERNAL void tg_open_scope(tgProc *p) {
 TG_INTERNAL void tg_close_scope(tgProc *p) {
 	tg_set_debug_scope(p, p->debug_scope_parent.data[p->debug_scope]);
 }
+
+////////////////////////////////////////////////////////////////
+// IR checks
+//
+// With TG_CHECK_IR defined, tyg_proc_end checks after each pass what every later pass relies
+// on: each vreg has at most one definition, each vreg an instruction reads has one, and each
+// placed block ends in a terminator. test/run.sh builds the tests with it; a release build
+// leaves it out, since it walks the whole procedure after each pass.
+////////////////////////////////////////////////////////////////
+
+#ifdef TG_CHECK_IR
+typedef struct tgCheckIr { tgI32Array defs; isize unread; } tgCheckIr;
+
+TG_INTERNAL void tg__check_ir_def(void *ctx, u32 v, bool is_def) {
+	tgCheckIr *c = (tgCheckIr *)ctx;
+	if (v != 0 && is_def) c->defs.data[v]++;
+}
+
+TG_INTERNAL void tg__check_ir_use(void *ctx, u32 v, bool is_def) {
+	tgCheckIr *c = (tgCheckIr *)ctx;
+	if (v != 0 && !is_def && c->defs.data[v] == 0) c->unread++;
+}
+
+TG_INTERNAL void tg_check_ir(tgProc *p, char const *after) {
+	tgCheckIr c;
+	memset(&c, 0, sizeof(c));
+	tg_array_make(&c.defs, p->vregs.count);
+	for (isize bi = 0; bi < p->order.count; bi++) {
+		tgBlock *b = p->order.data[bi];
+		TG_ASSERT_MSG(tg_block_terminated(b), after);
+		for (isize ii = 0; ii < b->instrs.count; ii++) tg_for_each_vreg(p, &b->instrs.data[ii], tg__check_ir_def, &c);
+	}
+	for (isize v = 1; v < c.defs.count; v++) TG_ASSERT_MSG(c.defs.data[v] <= 1, after);
+	for (isize bi = 0; bi < p->order.count; bi++) {
+		tgBlock *b = p->order.data[bi];
+		for (isize ii = 0; ii < b->instrs.count; ii++) tg_for_each_vreg(p, &b->instrs.data[ii], tg__check_ir_use, &c);
+	}
+	TG_ASSERT_MSG(c.unread == 0, after);
+	tg_array_free(&c.defs);
+}
+#define TG_CHECK_IR_AFTER(p, pass) tg_check_ir((p), "IR check after " pass)
+#else
+#define TG_CHECK_IR_AFTER(p, pass) ((void)0)
+#endif

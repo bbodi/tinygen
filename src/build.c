@@ -313,12 +313,37 @@ int tyg_proc_end(tyg_proc *p) {
 	out.relocs.arena = tg_arena();
 	out.lines.arena = tg_arena();
 	out.pending.arena = tg_arena();
+
+	// The passes over the IR, in order. Each walks p->order, recounts the definitions and uses
+	// it needs, and acts only on vregs with one definition. None adds a block or a local, and
+	// none gives a vreg a second definition, so each pass may rely on the builder's single
+	// definitions. Each turns what it removes into a Nop, which keeps positions stable.
+	TG_CHECK_IR_AFTER(p, "the builder");
+	// A load of a local that one store sets to a constant becomes that constant. The store
+	// stays for tg_cleanup_proc.
 	tg_fold_const_locals(p);
+	TG_CHECK_IR_AFTER(p, "tg_fold_const_locals");
+	// A read of a memcopy's destination reads its source, and a memcopy nothing reads goes.
+	// It also rewrites p->params_in and the memory operands of call arguments.
 	tg_forward_mem_copies(p);
+	TG_CHECK_IR_AFTER(p, "tg_forward_mem_copies");
+	// A load that repeats one in its block becomes a Copy of the earlier value, defined in the
+	// same block, so that the next pass can drop it.
 	tg_reuse_loads(p);
+	TG_CHECK_IR_AFTER(p, "tg_reuse_loads");
+	// Those copies and repeated pure operations go, and their readers read the value itself.
+	// Without this pass the copies stay, which the lowerings handle.
 	tg_forward_copies(p);
+	TG_CHECK_IR_AFTER(p, "tg_forward_copies");
+	// arm64: two narrow loads next to each other become one wide load. The only pass that adds
+	// vregs, three per pair, each with one definition.
 	tg_pair_loads(p);
+	TG_CHECK_IR_AFTER(p, "tg_pair_loads");
+	// Last, since it removes what the passes before leave dead: unused values and loads, and
+	// stores to locals that nothing reads or that a later store overwrites.
 	tg_cleanup_proc(p);
+	TG_CHECK_IR_AFTER(p, "tg_cleanup_proc");
+	// tg_alloc_regs sizes its facts from the final p->vregs.count
 	if (tg_is_arm64()) {
 		a64_lower_proc(p, &out);
 	} else {
