@@ -33,11 +33,6 @@ enum { X64_INLINE_COPY = 64 };
 
 #define TG_SWAP(T, a, b) do { T tg__swap_tmp = (a); (a) = (b); (b) = tg__swap_tmp; } while (0)
 
-// xb_lt_align_formula, which lived in x64_abi.cpp: off rounded up to a multiple of a.
-TG_INTERNAL i64 x64_align_formula(i64 off, i64 a) {
-	return (off + a - 1) / a * a;
-}
-
 typedef struct tgLowerFixup { i64 at; i32 block; } tgLowerFixup;
 TG_ARRAY(tgLowerFixupArray, tgLowerFixup);
 
@@ -231,19 +226,19 @@ TG_INTERNAL void tg_lower_layout(tgLower *L) {
 		}
 		if (l->over_align > 16) {
 			// the frame is only 16 byte aligned, the prologue picks an aligned spot in the raw area
-			cur = (i32)x64_align_formula(cur + l->size + l->over_align - 16, 16);
+			cur = (i32)tg_round_up(cur + l->size + l->over_align - 16, 16);
 			l->raw_offset = -cur;
-			cur = (i32)x64_align_formula(cur + 8, 8);
+			cur = (i32)tg_round_up(cur + 8, 8);
 			l->frame_offset = -cur;
 			continue;
 		}
-		cur = (i32)x64_align_formula(cur + l->size, l->align);
+		cur = (i32)tg_round_up(cur + l->size, l->align);
 		l->frame_offset = -cur;
 	}
 
 	// the outgoing argument area: with over-aligned stack arguments, its alignment, so the
 	// allocas above it, see tgOp_Alloca, stay clear of the frame
-	L->frame_size = (i32)x64_align_formula(cur, 16) + (i32)x64_align_formula(L->max_call_stack, tg_max(16, p->call_align));
+	L->frame_size = (i32)tg_round_up(cur, 16) + (i32)tg_round_up(L->max_call_stack, tg_max(16, p->call_align));
 }
 
 ////////////////////////////////////////////////////////////////
@@ -849,22 +844,6 @@ TG_INTERNAL i32 x64_helper(tgModule *m, bool set) {
 	}
 	m->symbols.data[sym].size = tg_pos(a) - start;
 	return sym;
-}
-
-// A pending symbol for `name`, which the main thread looks up or adds when it appends the
-// code: it changes the symbol table while workers lower. `helper` was a default argument, 0.
-TG_INTERNAL i32 tg_lower_symbol(tgModule *m, tgLowerOut *out, tgString name, u32 flags, i8 helper) {
-	(void)m;
-	for (isize i = 0; i < out->pending.count; i++) {
-		if (tg_str_eq(out->pending.data[i].name, name)) return TG_PENDING_SYM + (i32)i;
-	}
-	tgPendingSym ps;
-	memset(&ps, 0, sizeof(ps));
-	ps.name = name;
-	ps.flags = flags;
-	ps.helper = helper;
-	tg_array_add(&out->pending, ps);
-	return TG_PENDING_SYM + (i32)(out->pending.count-1);
 }
 
 // The __imp_ symbol of `sym`, pending.
@@ -2059,7 +2038,7 @@ TG_INTERNAL void tg_lower_instr(tgLower *L, tgInstr const *in) {
 		// the block goes above the outgoing argument area, which moves down with rsp
 		// with over-aligned stack arguments rsp keeps their alignment, see the prologue
 		i32 sp_align = tg_max(16, L->p->call_align);
-		i32 args_area = (i32)x64_align_formula(L->max_call_stack, sp_align);
+		i32 args_area = (i32)tg_round_up(L->max_call_stack, sp_align);
 		tgOpnd n = x64_opnd(L, in->a, RAX, 8);
 		tg_lea(a, RCX, tg_m(RSP, args_area));
 		tg_alu_r_rm(a, ALU_SUB, 8, RCX, n);

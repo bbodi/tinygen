@@ -298,17 +298,17 @@ TG_INTERNAL void a64_lower_layout(a64Lower *L) {
 		tgLocal *l = &p->locals.data[i];
 		if (l->over_align > 16) {
 			// the frame is only 16 byte aligned, the prologue picks an aligned spot in the raw area
-			cur = (i32)x64_align_formula(cur + l->size + l->over_align - 16, 16);
+			cur = (i32)tg_round_up(cur + l->size + l->over_align - 16, 16);
 			l->raw_offset = -cur;
-			cur = (i32)x64_align_formula(cur + 8, 8);
+			cur = (i32)tg_round_up(cur + 8, 8);
 			l->frame_offset = -cur;
 			continue;
 		}
-		cur = (i32)x64_align_formula(cur + l->size, l->align);
+		cur = (i32)tg_round_up(cur + l->size, l->align);
 		l->frame_offset = -cur;
 	}
 
-	L->frame_size = (i32)x64_align_formula(cur, 16) + (i32)x64_align_formula(L->max_call_stack, 16);
+	L->frame_size = (i32)tg_round_up(cur, 16) + (i32)tg_round_up(L->max_call_stack, 16);
 }
 
 ////////////////////////////////////////////////////////////////
@@ -1419,7 +1419,7 @@ TG_INTERNAL void a64_lower_instr(a64Lower *L, tgInstr const *in) {
 	}
 	case tgOp_Alloca: {
 		// the block goes above the outgoing argument area, which moves down with sp
-		i32 args_area = (i32)x64_align_formula(L->max_call_stack, 16);
+		i32 args_area = (i32)tg_round_up(L->max_call_stack, 16);
 		u32 shift = 0;
 		while (((i64)1 << shift) < in->imm) shift++;
 		u8 n = a64_src(L, in->a, A64_T1, 8, tgExt_None);

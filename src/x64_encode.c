@@ -59,60 +59,6 @@ TG_INTERNAL tgOpnd tg_m_sym(i32 sym, i32 addend, tgRelocKind reloc) {
 	return o;
 }
 
-typedef struct tgAsm {
-	tgModule *m;
-	tgBytes *code;
-	tgRelocArray *relocs;
-} tgAsm;
-
-TG_INTERNAL i64 tg_pos(tgAsm *a) {
-	return a->code->count;
-}
-
-TG_INTERNAL void tg_b(tgAsm *a, u8 b) {
-	tg_array_add(a->code, b);
-}
-
-TG_INTERNAL void tg_bytes(tgAsm *a, void const *data, isize n) {
-	tg_array_add_elems(a->code, (u8 const *)data, n);
-}
-
-TG_INTERNAL void tg_u16(tgAsm *a, u16 v) { tg_bytes(a, &v, 2); }
-TG_INTERNAL void tg_u32(tgAsm *a, u32 v) { tg_bytes(a, &v, 4); }
-TG_INTERNAL void tg_u64(tgAsm *a, u64 v) { tg_bytes(a, &v, 8); }
-
-TG_INTERNAL void tg_patch_u32(tgAsm *a, i64 at, u32 v) {
-	memmove(a->code->data + at, &v, 4);
-}
-
-// A relocation in a data section.
-TG_INTERNAL void tg_module_reloc(tgModule *m, tgReloc r) {
-	tg_array_add(&m->relocs, r);
-}
-
-TG_INTERNAL void tg_add_reloc(tgModule *m, tgSection section, tgRelocKind kind, i64 offset, i32 sym, i64 addend) {
-	tgReloc r;
-	memset(&r, 0, sizeof(r));
-	r.section = section;
-	r.kind = kind;
-	r.offset = offset;
-	r.sym = sym;
-	r.addend = addend;
-	tg_module_reloc(m, r);
-}
-
-// A relocation in the code being assembled, at an offset in a->code.
-TG_INTERNAL void tg_asm_reloc(tgAsm *a, tgRelocKind kind, i64 offset, i32 sym, i64 addend) {
-	tgReloc r;
-	memset(&r, 0, sizeof(r));
-	r.section = tgSection_Text;
-	r.kind = kind;
-	r.offset = offset;
-	r.sym = sym;
-	r.addend = addend;
-	tg_array_add(a->relocs, r);
-}
-
 enum {
 	TG_W      = 1<<0, // REX.W
 	TG_BYTE   = 1<<1, // 8-bit operation on a gpr (needs REX for sil/dil/spl/bpl)

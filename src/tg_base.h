@@ -60,6 +60,9 @@ TG_NORETURN TG_INTERNAL void tg_assert_fail(char const *file, int line, char con
 #define tg_clamp(x, lo, hi) tg_min(tg_max((x), (lo)), (hi))
 
 TG_INTERNAL i64 tg_align_up(i64 x, i64 a) { return (x + a - 1) & ~(a - 1); }
+// x rounded up to a multiple of a, which need not be a power of two. Unlike tg_align_up, a
+// negative x rounds toward zero.
+TG_INTERNAL i64 tg_round_up(i64 x, i64 a) { return (x + a - 1) / a * a; }
 TG_INTERNAL bool tg_is_pow2(i64 x) { return x > 0 && (x & (x - 1)) == 0; }
 TG_INTERNAL i64 tg_next_pow2(i64 x) { i64 p = 1; while (p < x) p <<= 1; return p; }
 

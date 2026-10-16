@@ -3,6 +3,7 @@
 #define _CRT_SECURE_NO_WARNINGS // the Windows CRT deprecates fopen and friends
 #endif
 #include "tg_ir.h"
+#include "asm.c"
 #include "x64_encode.c"
 #include "a64_encode.c"
 #include "types.c"
