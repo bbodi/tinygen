@@ -207,6 +207,10 @@ enum {
 	tgOp_HalfToF,     // dst(f32) = the f16 bits a; arm64 only
 	tgOp_StackRestore, // rsp = a, a value of tgOp_StackPointer: frees the allocas since
 	tgOp_X87,         // x86-64 long double on the x87 unit, aux = tgX87Op, see there
+	tgOp_Param,       // C output only: dst = parameter imm, or a pointer to it for an aggregate or long double
+	tgOp_VaStart,     // C output only: va_start of the va_list at a
+	tgOp_VaArg,       // C output only: dst = a pointer to the next argument of the va_list at a, of type p->c_va_types[imm]
+	tgOp_VaCopy,      // C output only: va_copy of the va_list at b to the one at a
 
 	tgOp_COUNT,
 };
@@ -352,6 +356,7 @@ struct tyg_sig {
 };
 
 TG_ARRAY(tgSigPtrArray, tyg_sig const *);
+TG_ARRAY(tgTypePtrArray, tyg_type const *);
 
 ////////////////////////////////////////////////////////////////
 // ABI
@@ -459,6 +464,15 @@ TG_ARRAY(tgCallRetArray, tgCallRet);
 TG_SLICE(tgCallArgSlice, tgCallArg);
 TG_SLICE(tgCallRetSlice, tgCallRet);
 
+typedef struct tgArgValue tgArgValue;
+
+// C output: what the C printer needs of a call besides the args and rets the IR walkers see.
+typedef struct tgCCall {
+	tyg_sig const *    sig;
+	tgArgValue const * values; // the type of each argument, varargs too
+	i32                count;
+} tgCCall;
+
 typedef struct tgCall {
 	u32             target_vreg; // 0 if direct
 	i32             target_sym;  // -1 if indirect
@@ -466,18 +480,19 @@ typedef struct tgCall {
 	tgCallRetSlice rets;
 	i32             stack_size;
 	i32             sse_count;   // for C varargs: number of xmm registers used, else -1
-	u32             result_vreg; // for syscalls
+	u32             result_vreg; // for syscalls, and the scalar result of a C output call
 	bool            returns_twice; // setjmp: nothing stays in a register across the call
+	tgCCall const * c;           // C output, else NULL; an aggregate result goes to rets[0].dst
 } tgCall;
 
 TG_ARRAY(tgCallArray, tgCall);
 
 // One argument of a call, converted from the public tyg_arg by call.c.
-typedef struct tgArgValue {
+struct tgArgValue {
 	u32              val;  // a scalar, or 0
 	tgMem            mem;  // the aggregate, when val is 0
 	tyg_type const * type;
-} tgArgValue;
+};
 
 ////////////////////////////////////////////////////////////////
 // Procedures
@@ -661,6 +676,8 @@ struct tyg_proc {
 	i32                sret_local;  // the local holding the hidden result pointer, or -1
 	i32                va_save_local; // variadic: the register save area, or -1
 	i32                call_align;    // the alignment the calls' stack arguments need past 16, or 0
+	bool               c_returns_twice; // C output: it calls setjmp, so its variables are volatile
+	tgTypePtrArray    c_va_types;      // C output: the type of each tgOp_VaArg
 
 	i32                file_id;
 	i32                last_line;

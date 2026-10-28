@@ -2,8 +2,10 @@
 // smoke_main.c calls them and checks the results.
 //
 //   cc -std=c99 -Iinclude test/smoke.c src/tinygen.c -o smoke
-//   ./smoke smoke.o [linux-x64|linux-arm64|macos-arm64|macos-x64|windows|windows-dwarf]
+//   ./smoke smoke.o [linux-x64|linux-arm64|macos-arm64|macos-x64|windows|windows-dwarf|c]
 //
+// "c" writes C source for the host, and reports every procedure that fails instead of
+// stopping at the first.
 // Without a target it builds for linux-x64. "linux" is linux-x64.
 #include "tinygen.h"
 #include <stdio.h>
@@ -15,10 +17,13 @@ static tyg_file file;
 static int windows;
 static int is_elf;
 
+static int c_failed = -1; // the "c" target goes on after a failure and counts it
+
 static void check(int failed) {
 	if (failed) {
 		fprintf(stderr, "tinygen: %s\n", tyg_error(m));
-		exit(1);
+		if (c_failed < 0) exit(1);
+		c_failed++;
 	}
 }
 
@@ -803,13 +808,18 @@ int main(int argc, char **argv) {
 	} else if (strcmp(target, "windows") == 0) {
 		t.os = TYG_OS_WINDOWS;
 		windows = 1;
+	} else if (strcmp(target, "c") == 0) {
+		t = tyg_host_target();
+		t.output = TYG_OUTPUT_C;
+		windows = t.os == TYG_OS_WINDOWS;
+		c_failed = 0;
 	} else if (strcmp(target, "windows-dwarf") == 0) {
 		// DWARF in the COFF object, for gdb
 		t.os = TYG_OS_WINDOWS;
 		t.debug_info = TYG_DEBUG_DWARF;
 		windows = 1;
 	} else {
-		fprintf(stderr, "usage: smoke out.o [linux-x64|linux-arm64|macos-arm64|macos-x64|windows|windows-dwarf]\n");
+		fprintf(stderr, "usage: smoke out.o [linux-x64|linux-arm64|macos-arm64|macos-x64|windows|windows-dwarf|c]\n");
 		return 2;
 	}
 	is_elf = t.os == TYG_OS_LINUX;
@@ -846,5 +856,5 @@ int main(int argc, char **argv) {
 	if (!windows && !is_elf) check_abs32();
 	check(tyg_module_write(m, out));
 	tyg_module_free(m);
-	return 0;
+	return c_failed > 0;
 }

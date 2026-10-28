@@ -6,6 +6,52 @@
 // Calls
 ////////////////////////////////////////////////////////////////
 
+// C output: the call as the C printer needs it, with an arg per value for the IR walkers.
+// Returns the scalar result's vreg, or 0.
+TG_INTERNAL u32 tg_c_emit_call(tgProc *p, tyg_sig const *sig, i32 direct_sym, u32 target_vreg,
+                               tgArgValue const *values, int count, tgMem const *result) {
+	tgCall call;
+	tgCCall *c = tg_alloc_item(tgCCall);
+	tgCallArg *args = tg_alloc_items(tgCallArg, count > 0 ? count : 1);
+	tgType rs = sig->ret != NULL ? tg_t_scalar(sig->ret) : tgType_None;
+	tgInstr ci;
+	int i;
+	memset(&call, 0, sizeof(call));
+	for (i = 0; i < count; i++) {
+		args[i].vreg = values[i].val;
+		args[i].type = values[i].val != 0 ? p->vregs.data[values[i].val] : tgType_None;
+		args[i].kind = values[i].val != 0 ? tgCallArg_Gpr : tgCallArg_StackMem;
+		args[i].mem = values[i].mem;
+		args[i].size = (i32)values[i].type->size;
+	}
+	c->sig = sig;
+	c->values = values;
+	c->count = count;
+	call.c = c;
+	call.target_sym = direct_sym;
+	call.target_vreg = direct_sym < 0 ? target_vreg : 0;
+	call.args.data = args;
+	call.args.count = count;
+	if (result != NULL) {
+		tgCallRet *r = tg_alloc_item(tgCallRet);
+		r->dst = *result;
+		r->size = (i32)sig->ret->size;
+		call.rets.data = r;
+		call.rets.count = 1;
+	}
+	if (rs != tgType_None) call.result_vreg = tg_new_vreg(p, rs);
+	call.sse_count = -1;
+	call.returns_twice = (sig->flags & TYG_SIG_RETURNS_TWICE) != 0;
+	p->c_returns_twice |= call.returns_twice;
+	if (direct_sym >= 0) tg_c_sym_sig_set(p->m, direct_sym, sig, false);
+	tg_array_add(&p->calls, call);
+	ci = tg_instr(tgOp_Call);
+	ci.imm = p->calls.count-1;
+	tg_emit(p, ci);
+	if (sig->flags & TYG_SIG_NORETURN) tg_unreachable(p);
+	return call.result_vreg;
+}
+
 tyg_val tyg_call(tyg_proc *p, const tyg_sig *sig, tyg_callee callee,
                  const tyg_arg *args, int count,
                  const tyg_type *const *vararg_types, const tyg_addr *result) {
@@ -96,6 +142,7 @@ tyg_val tyg_call(tyg_proc *p, const tyg_sig *sig, tyg_callee callee,
 		if (!tg_addr_to_mem(p, *result, &result_mem)) return 0;
 		has_result_mem = true;
 	}
+	if (tg_is_c_output()) return tg_c_emit_call(p, sig, direct_sym, target_vreg, values, count, has_result_mem ? &result_mem : NULL);
 
 	if (tg_is_arm64() && !tg_is_darwin() && count > sig->count) {
 		// AAPCS64 passes every vararg like a fixed parameter of its type, aggregates too
@@ -192,12 +239,18 @@ void tyg_va_start(tyg_proc *p, tyg_val ap) {
 	tgAbiFunc *abi;
 	if (!tg_b_ok(p)) return;
 	if (!tg_va_check(p, ap)) return;
-	if (tg_is_win64()) {
-		tg_win64_va_start(p, ap);
-		return;
-	}
 	if (!(p->sig->flags & TYG_SIG_VARIADIC)) {
 		tg_fail(p, "tyg_va_start: the procedure is not variadic");
+		return;
+	}
+	if (tg_is_c_output()) {
+		tgInstr in = tg_instr(tgOp_VaStart);
+		in.a = ap;
+		tg_emit(p, in);
+		return;
+	}
+	if (tg_is_win64()) {
+		tg_win64_va_start(p, ap);
 		return;
 	}
 	if (tg_is_arm64()) {
@@ -237,6 +290,15 @@ tyg_val tyg_va_arg(tyg_proc *p, tyg_val ap, const tyg_type *t) {
 	if (t == NULL) {
 		tg_fail(p, "tyg_va_arg: no type");
 		return tg_dummy(p, tgType_I64);
+	}
+	if (tg_is_c_output()) {
+		tgInstr in = tg_instr_t(tgOp_VaArg, tgType_I64);
+		in.dst = tg_new_vreg(p, tgType_I64);
+		in.a = ap;
+		in.imm = p->c_va_types.count;
+		tg_array_add(&p->c_va_types, t);
+		tg_emit(p, in);
+		return in.dst;
 	}
 	if (tg_t_unsupported_ld(t)) {
 		tg_fail(p, "long double is not supported on this target yet");
@@ -345,6 +407,13 @@ void tyg_va_copy(tyg_proc *p, tyg_val dst, tyg_val src) {
 	i64 size = TG_VA_LIST_SIZE;
 	if (!tg_b_ok(p)) return;
 	if (!tg_va_check(p, dst) || !tg_va_check(p, src)) return;
+	if (tg_is_c_output()) {
+		tgInstr in = tg_instr(tgOp_VaCopy);
+		in.a = dst;
+		in.b = src;
+		tg_emit(p, in);
+		return;
+	}
 	if (tg_is_arm64()) size = tg_is_darwin() ? 8 : TG_A64_VA_LIST_SIZE;
 	if (tg_is_win64()) size = 8;
 	tg_memcopy(p, tg_mem(tgMem_Reg, dst, 0), tg_mem(tgMem_Reg, src, 0), size);

@@ -15,7 +15,6 @@
 #include "a64_lower.c"
 #include "x64_win64.c"
 #include "module.c"
-#include "cgen.c"
 #include "dwarf.c"
 #include "elf.c"
 #include "macho.c"
@@ -23,6 +22,7 @@
 #include "codeview.c"
 #include "dump.c"
 #include "ir.c"
+#include "cgen.c" // after dump.c and ir.c: it names the ops and fails procedures
 #include "args.c"
 #include "build.c"
 #include "call.c"

@@ -37,11 +37,22 @@ fail() {
 	failed=1
 }
 
+os=$(uname -s)
+arch=$(uname -m)
+case "$os-$arch" in
+Darwin-arm64) host=macos-arm64 ;;
+Darwin-x86_64) host=macos-x64 ;;
+Linux-x86_64) host=linux-x64 ;;
+Linux-aarch64) host=linux-arm64 ;;
+*) host="" ;;
+esac
+
 # TG_CHECK_IR checks the IR after each pass; it does not change the objects.
 echo "building the generators"
 $cc -std=c99 -Wall -DTG_CHECK_IR -Iinclude test/smoke.c src/tinygen.c -o "$out/smoke"
 $cc -std=c99 -Wall -DTG_CHECK_IR -Iinclude test/abi.c src/tinygen.c -o "$out/abi"
 $cc -std=c99 -O2 -Wall -DTG_CHECK_IR -Iinclude test/bench.c src/tinygen.c -o "$out/bench"
+$cc -std=c99 -Wall -DTG_CHECK_IR -Iinclude test/cgen.c src/tinygen.c -o "$out/cgen"
 
 # Every object, written to a fixed path, since an object records the path it was written to.
 echo "emitting the objects"
@@ -60,6 +71,10 @@ done
 for t in linux-x64 linux-arm64 macos-arm64 macos-x64 windows; do
 	emit "bench-$t" "$out/bench" "$out/obj/bench-$t.o" "$t" 2000 2000
 done
+# the C output is text, not an object: --save and --compare leave it out
+rm -f "$out/obj/cgen-c.c" "$out/obj/cgen-$host.o"
+emit cgen-c "$out/cgen" "$out/obj/cgen-c.c" c
+[ -z "$host" ] || emit "cgen-$host" "$out/cgen" "$out/obj/cgen-$host.o" "$host"
 
 if [ -n "$save" ]; then
 	mkdir -p "$save"
@@ -100,8 +115,6 @@ run_native() {
 	ran="$ran $t"
 }
 
-os=$(uname -s)
-arch=$(uname -m)
 case "$os-$arch" in
 Darwin-arm64)
 	run_native macos-arm64 "-arch arm64"
@@ -116,6 +129,35 @@ Linux-x86_64) run_native linux-x64 "" ;;
 Linux-aarch64) run_native linux-arm64 "" ;;
 *) echo "no native target for $os-$arch" ;;
 esac
+
+# run_cgen name flags input: compiles cgen_main.c with the C output or the host object and
+# runs it. A warning about the C output fails it too.
+run_cgen() {
+	bin="$out/cgen-$1"
+	# shellcheck disable=SC2086
+	if ! $cc -std=c99 -Wall -Wextra $2 "$3" test/cgen_main.c -o "$bin" > "$bin.log" 2>&1 ||
+		{ case "$3" in *.c) [ -s "$bin.log" ] ;; *) false ;; esac; }; then
+		cat "$bin.log"
+		fail "compile cgen $1"
+		return 0
+	fi
+	if "$bin" > "$bin.log" 2>&1; then echo "cgen $1: $(tail -n 1 "$bin.log")"; else cat "$bin.log"; fail "run cgen $1"; fi
+}
+if [ -f "$out/obj/cgen-c.c" ]; then
+	echo "checking the C output"
+	run_cgen c-O0 -O0 "$out/obj/cgen-c.c"
+	run_cgen c-O2 -O2 "$out/obj/cgen-c.c"
+	ubsan="-O1 -fsanitize=undefined -fno-sanitize-recover=undefined"
+	echo "int main(void) { return 0; }" > "$out/ubsan-probe.c"
+	# shellcheck disable=SC2086
+	if $cc $ubsan "$out/ubsan-probe.c" -o "$out/ubsan-probe" > /dev/null 2>&1; then
+		run_cgen c-ubsan "$ubsan" "$out/obj/cgen-c.c"
+	else
+		echo "cgen c-ubsan: skipped, $cc does not accept $ubsan"
+		skipped="$skipped cgen-ubsan"
+	fi
+	[ ! -f "$out/obj/cgen-$host.o" ] || run_cgen "$host-O0" -O0 "$out/obj/cgen-$host.o"
+fi
 
 if [ $docker -eq 1 ]; then
 	for t in linux-arm64 linux-x64; do

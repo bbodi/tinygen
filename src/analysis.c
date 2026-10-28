@@ -43,6 +43,7 @@ TG_FORCEINLINE void tg_for_each_vreg(tgProc *p, tgInstr const *in, tgVregProc f,
 	case tgOp_StackPointer:
 	case tgOp_FrameAddress:
 	case tgOp_ReturnAddress:
+	case tgOp_Param:
 		f(ctx, in->dst, true);
 		break;
 	case tgOp_Lea:
@@ -62,6 +63,7 @@ TG_FORCEINLINE void tg_for_each_vreg(tgProc *p, tgInstr const *in, tgVregProc f,
 		break;
 	case tgOp_MemCopy:
 	case tgOp_MemMove:
+	case tgOp_VaCopy:
 		f(ctx, in->a, false);
 		f(ctx, in->b, false);
 		break;
@@ -80,6 +82,7 @@ TG_FORCEINLINE void tg_for_each_vreg(tgProc *p, tgInstr const *in, tgVregProc f,
 		f(ctx, in->dst, true);
 		break;
 	case tgOp_Branch:
+	case tgOp_VaStart:
 		f(ctx, in->a, false);
 		break;
 	case tgOp_AtomicRmw:
@@ -154,7 +157,7 @@ TG_FORCEINLINE void tg_for_each_vreg(tgProc *p, tgInstr const *in, tgVregProc f,
 		for (isize i = 0; i < c->rets.count; i++) {
 			tg__use_mem(&c->rets.data[i].dst, f, ctx);
 		}
-		if (in->op == tgOp_Syscall) f(ctx, c->result_vreg, true);
+		if (in->op == tgOp_Syscall || c->result_vreg != 0) f(ctx, c->result_vreg, true);
 		break;
 	}
 	default:
@@ -206,6 +209,7 @@ TG_INTERNAL bool tg_op_is_pure(tgOp op) {
 	case tgOp_Bitcast:
 	case tgOp_Select:
 	case tgOp_Fma:
+	case tgOp_Param:
 		return true;
 	}
 	return false;
@@ -1211,6 +1215,7 @@ TG_INTERNAL void tg__rename_uses(tgProc *p, tgInstr *in, u32 const *map) {
 	case tgOp_FrameAddress:
 	case tgOp_ReturnAddress:
 	case tgOp_TlsAddr:
+	case tgOp_Param:
 		break;
 	case tgOp_Lea:
 	case tgOp_Load:
@@ -1227,6 +1232,7 @@ TG_INTERNAL void tg__rename_uses(tgProc *p, tgInstr *in, u32 const *map) {
 		break;
 	case tgOp_MemCopy:
 	case tgOp_MemMove:
+	case tgOp_VaCopy:
 	case tgOp_Valgrind:
 	case tgOp_MulOvf:
 		TG_RN(in->a);
@@ -1244,6 +1250,7 @@ TG_INTERNAL void tg__rename_uses(tgProc *p, tgInstr *in, u32 const *map) {
 	case tgOp_Branch:
 	case tgOp_Alloca:
 	case tgOp_StackRestore:
+	case tgOp_VaStart:
 		TG_RN(in->a);
 		break;
 	case tgOp_AtomicCas:

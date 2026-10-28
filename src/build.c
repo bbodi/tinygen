@@ -122,7 +122,8 @@ TG_INTERNAL bool tg_addr_to_mem(tgProc *p, tyg_addr a, tgMem *out) {
 			return false;
 		}
 		tg_alias_take_tls(p->m, (i32)a.base);
-		if (p->m->symbols.data[a.base].flags & tgSymbolFlag_TLS) {
+		// the C names a thread local like any variable
+		if ((p->m->symbols.data[a.base].flags & tgSymbolFlag_TLS) && !tg_is_c_output()) {
 			m = tg_tls_mem(p, a.base);
 			m = tg_mem_offset(m, a.offset);
 		} else {
@@ -223,11 +224,6 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 		tg_set_error(m, "tyg_proc_begin: invalid symbol or signature");
 		return NULL;
 	}
-	if (m->target.output == TYG_OUTPUT_C) {
-		tg_set_error(m, "C output: procedures are not supported yet");
-		return NULL;
-	}
-
 	tg_arena_cur = &m->proc_arena;
 	tg_arena_reset(&m->proc_arena);
 	tg_cur_target = m->target;
@@ -248,6 +244,7 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 	p->debug_vars.arena = tg_arena();
 	p->debug_scope_parent.arena = tg_arena();
 	p->inline_sites.arena = tg_arena();
+	p->c_va_types.arena = tg_arena();
 	tg_array_reserve(&p->vregs, 256);
 	tg_array_add(&p->vregs, tgType_None); // vreg 0 is invalid
 	{
@@ -265,6 +262,21 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 
 	if (m->symbols.data[sym].section != tgSection_Undef) {
 		tg_fail(p, "the symbol is already defined");
+	}
+	if (m->target.output == TYG_OUTPUT_C) {
+		// the C compiler receives the parameters: p->abi stays NULL, and each parameter is
+		// a tgOp_Param, its value or for an aggregate or a long double a pointer to it
+		tg_c_sym_sig_set(m, sym, sig, true);
+		if ((sig->flags & TYG_SIG_VARIADIC) && sig->count == 0) tg_fail(p, "C output: a variadic signature needs a named parameter");
+		for (i = 0; i < sig->count; i++) {
+			tgType st = tg_t_scalar(sig->params[i]);
+			tgInstr in = tg_instr_t(tgOp_Param, st != tgType_None ? st : tgType_I64);
+			in.dst = tg_new_vreg(p, in.type);
+			in.imm = i;
+			tg_emit(p, in);
+			tg_array_add(&p->param_vals, in.dst);
+		}
+		return p;
 	}
 	p->abi = tg_sig_abi((tyg_sig *)sig, &reason);
 	if (p->abi == NULL) {
@@ -305,6 +317,24 @@ int tyg_proc_end(tyg_proc *p) {
 		tg_set_error(m, "%.*s: %s", (int)p->name.len, p->name.text, p->fail_reason);
 		tg_proc_discard(m);
 		return 1;
+	}
+	if (m->target.output == TYG_OUTPUT_C) {
+		// the builder's IR as a C function, without the passes; on failure the symbol stays
+		// undefined and m->c_procs unchanged
+		tgSymbol *s = &m->symbols.data[p->sym];
+		u16 flags = s->flags;
+		TG_CHECK_IR_AFTER(p, "the builder");
+		s->section = p->code_section != 0 ? p->code_section : tgSection_Text;
+		s->flags |= tgSymbolFlag_Func;
+		if (!tg_c_proc(p)) {
+			s->section = tgSection_Undef;
+			s->flags = flags;
+			tg_set_error(m, "%.*s: %s", (int)p->name.len, p->name.text, p->fail_reason);
+			tg_proc_discard(m);
+			return 1;
+		}
+		tg_proc_discard(m);
+		return 0;
 	}
 
 	// the procedure counts as defined from here on, and calls to itself see that
@@ -764,6 +794,10 @@ tyg_val tyg_select(tyg_proc *p, tyg_val cond, tyg_val a, tyg_val b) {
 // Whether the builder may go on with a long double operation.
 TG_INTERNAL bool tg_ld_ok(tgProc *p) {
 	if (!tg_b_ok(p)) return false;
+	if (tg_is_c_output()) {
+		tg_fail(p, "C output: long double is not supported yet");
+		return false;
+	}
 	if (!tg_ld_supported()) {
 		tg_fail(p, "long double is not supported on this target yet");
 		return false;
@@ -957,7 +991,7 @@ void tyg_ret_mem(tyg_proc *p, tyg_addr a) {
 		tg_fail(p, "tyg_ret_mem: the procedure has no result");
 		return;
 	}
-	if (p->abi->has_sret) {
+	if (!tg_is_c_output() && p->abi->has_sret) {
 		tgMem dst = tg_mem(tgMem_Reg, tg_load(p, tgType_I64, tg_mem(tgMem_Local, (u32)p->sret_local, 0)), 0);
 		tg_memcopy(p, dst, m, rt->size);
 		tg_emit_ret(p, false, 0, m);
@@ -1232,6 +1266,7 @@ TG_INTERNAL void tg_add_debug_var(tgProc *p, char const *name, tyg_dtype const *
 			break;
 		}
 		if (!tg_val_addr_mem(p, (u32)where.base, &m)) {
+			if (tg_is_c_output()) return; // an aggregate parameter, a pointer in C mode: no debug variables yet
 			tg_fail(p, "debug variable: the address is not a local's or a symbol's");
 			return;
 		}

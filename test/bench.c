@@ -31,8 +31,14 @@ static double now_ms(void) {
 
 static tyg_module *m;
 
+static int c_failed = -1; // the "c" target goes on after a failure and counts it
+
 static void check(int r) {
-	if (r) { fprintf(stderr, "bench: %s\n", tyg_error(m)); exit(1); }
+	if (r) {
+		fprintf(stderr, "bench: %s\n", tyg_error(m));
+		if (c_failed < 0) exit(1);
+		c_failed++;
+	}
 }
 
 int main(int argc, char **argv) {
@@ -51,8 +57,13 @@ int main(int argc, char **argv) {
 		t.os = TYG_OS_DARWIN;
 	} else if (strcmp(target, "windows") == 0) {
 		t.os = TYG_OS_WINDOWS;
+	} else if (strcmp(target, "c") == 0) {
+		// C source for the host; every failing procedure is reported
+		t = tyg_host_target();
+		t.output = TYG_OUTPUT_C;
+		c_failed = 0;
 	} else {
-		fprintf(stderr, "usage: bench out.o [linux-x64|linux-arm64|macos-arm64|macos-x64|windows] [procs] [data symbols]\n");
+		fprintf(stderr, "usage: bench out.o [linux-x64|linux-arm64|macos-arm64|macos-x64|windows|c] [procs] [data symbols]\n");
 		return 2;
 	}
 	if (nproc < 1) nproc = 1;
@@ -169,5 +180,5 @@ int main(int argc, char **argv) {
 	free(syms);
 	printf("%-12s procs %6d data %6d | symbols %7.1f ms | procedures %8.1f ms (%5.2f us each) | write %7.1f ms | total %8.1f ms\n",
 	       target, nproc, ndata, t1 - t0, t2 - t1, (t2 - t1)*1e3/nproc, t3 - t2, t3 - t0);
-	return 0;
+	return c_failed > 0;
 }

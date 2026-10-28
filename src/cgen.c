@@ -40,6 +40,11 @@ static char const tg_c_prelude[] =
 	"#include <stdlib.h>\n"
 	"#include <math.h>\n"
 	"#include <stdarg.h>\n"
+	"#if defined(__clang__)\n" // the prototypes of libc functions take void * for const char *
+	"#pragma clang diagnostic ignored \"-Wincompatible-library-redeclaration\"\n"
+	"#elif defined(__GNUC__)\n"
+	"#pragma GCC diagnostic ignored \"-Wbuiltin-declaration-mismatch\"\n"
+	"#endif\n"
 	"#define TYG_STR2(x) #x\n"
 	"#define TYG_STR(x) TYG_STR2(x)\n"
 	"#if defined(__GNUC__) || defined(__clang__)\n"
@@ -48,10 +53,23 @@ static char const tg_c_prelude[] =
 	"#define TYG_WEAK __attribute__((weak))\n"
 	"#define TYG_SECTION(name) __attribute__((section(name)))\n"
 	"#define TYG_ASM_NAME(name) __asm__(TYG_STR(__USER_LABEL_PREFIX__) name)\n"
+	"#define TYG_ALTERNATE_NAME(c, name)\n"
 	"#define TYG_COMMON __attribute__((common))\n"
 	"#define TYG_NORETURN __attribute__((noreturn))\n"
+	"#define TYG_RETURNS_TWICE __attribute__((returns_twice))\n"
 	"#define TYG_UNUSED __attribute__((unused))\n"
 	"#define TYG_USED __attribute__((used))\n"
+	"#define TYG_UNREACHABLE() __builtin_unreachable()\n"
+	"#define TYG_TRAP() __builtin_trap()\n"
+	"#if defined(__clang__)\n"
+	"#define TYG_DEBUG_TRAP() __builtin_debugtrap()\n"
+	"#elif defined(__x86_64__)\n"
+	"#define TYG_DEBUG_TRAP() __asm__ volatile(\"int3\")\n"
+	"#elif defined(__aarch64__)\n"
+	"#define TYG_DEBUG_TRAP() __asm__ volatile(\"brk #0xf000\")\n"
+	"#else\n"
+	"#define TYG_DEBUG_TRAP() __builtin_trap()\n"
+	"#endif\n"
 	"#if defined(_WIN32)\n"
 	"#define TYG_HIDDEN\n"
 	"#define TYG_PROTECTED\n"
@@ -76,10 +94,15 @@ static char const tg_c_prelude[] =
 	"#define TYG_WEAK\n"
 	"#define TYG_SECTION(name)\n"
 	"#define TYG_ASM_NAME(name)\n"
+	"#define TYG_ALTERNATE_NAME(c, name) __pragma(comment(linker, \"/alternatename:\" #c \"=\" name))\n"
 	"#define TYG_COMMON\n"
 	"#define TYG_NORETURN __declspec(noreturn)\n"
+	"#define TYG_RETURNS_TWICE\n"
 	"#define TYG_UNUSED\n"
 	"#define TYG_USED\n"
+	"#define TYG_UNREACHABLE() __assume(0)\n"
+	"#define TYG_TRAP() abort()\n"
+	"#define TYG_DEBUG_TRAP() __debugbreak()\n"
 	"#define TYG_HIDDEN\n"
 	"#define TYG_PROTECTED\n"
 	"#define TYG_EXPORT __declspec(dllexport)\n"
@@ -90,10 +113,15 @@ static char const tg_c_prelude[] =
 	"#define TYG_WEAK\n"
 	"#define TYG_SECTION(name)\n"
 	"#define TYG_ASM_NAME(name)\n"
+	"#define TYG_ALTERNATE_NAME(c, name)\n"
 	"#define TYG_COMMON\n"
 	"#define TYG_NORETURN\n"
+	"#define TYG_RETURNS_TWICE\n"
 	"#define TYG_UNUSED\n"
 	"#define TYG_USED\n"
+	"#define TYG_UNREACHABLE() abort()\n"
+	"#define TYG_TRAP() abort()\n"
+	"#define TYG_DEBUG_TRAP() ((void)0)\n"
 	"#define TYG_HIDDEN\n"
 	"#define TYG_PROTECTED\n"
 	"#define TYG_EXPORT\n"
@@ -203,21 +231,23 @@ TG_INTERNAL void tg_c_string(tgBytes *b, tgString s) {
 	tg_array_add(b, (u8)'"');
 }
 
-// Prints the symbol's name, then its asm label when the C name is not its own.
-TG_INTERNAL void tg_c_sym_declarator(tgModule *m, tgBytes *b, i32 sym, char const *suffix) {
+// Prints the symbol's name, then its asm label when the C name is not its own. A function
+// definition takes no label: its prototype has it.
+TG_INTERNAL void tg_c_sym_declarator(tgModule *m, tgBytes *b, i32 sym, char const *suffix, bool label) {
 	tgString name = tg_c_sym_name(m, sym);
 	tg_c_printf(b, "%s%s", name.text, suffix);
-	if (name.text != m->symbols.data[sym].name.text) {
+	if (label && name.text != m->symbols.data[sym].name.text) {
 		tg_c_puts(b, " TYG_ASM_NAME(");
 		tg_c_string(b, m->symbols.data[sym].name);
 		tg_c_puts(b, ")");
 	}
 }
 
-// Records sym's signature for its prototype. The first one stays.
-TG_INTERNAL void tg_c_sym_sig_set(tgModule *m, i32 sym, tyg_sig const *sig) {
+// Records sym's signature for its prototype. The first one stays, unless `def`: the
+// definition's replaces it, so that the prototype and the definition agree.
+TG_INTERNAL void tg_c_sym_sig_set(tgModule *m, i32 sym, tyg_sig const *sig, bool def) {
 	if (m->c_sigs.count < m->symbols.count) tg_array_resize(&m->c_sigs, m->symbols.count);
-	if (m->c_sigs.data[sym] == NULL) m->c_sigs.data[sym] = sig;
+	if (m->c_sigs.data[sym] == NULL || def) m->c_sigs.data[sym] = sig;
 }
 
 TG_INTERNAL tyg_sig const *tg_c_sym_sig(tgModule *m, i32 sym) {
@@ -382,26 +412,55 @@ TG_INTERNAL void tg_c_attrs(tgModule *m, tgBytes *b, i32 sym, char const *storag
 	tg_c_puts(b, storage);
 }
 
-// Prints the prototype of a function symbol, without the semicolon.
-TG_INTERNAL void tg_c_proto(tgModule *m, tgBytes *b, i32 sym) {
+// Prints the parameter list of a signature, with `def` named p0, p1, ...
+TG_INTERNAL void tg_c_params(tgModule *m, tgBytes *b, tyg_sig const *sig, bool def) {
+	tg_c_puts(b, "(");
+	if (sig == NULL || (sig->count == 0 && !(sig->flags & TYG_SIG_VARIADIC))) tg_c_puts(b, "void");
+	for (i32 i = 0; sig != NULL && i < sig->count; i++) {
+		char name[32] = "";
+		if (def) snprintf(name, sizeof(name), "p%d", i);
+		if (i > 0) tg_c_puts(b, ", ");
+		tg_c_type_decl(m, b, sig->params[i], name);
+	}
+	if (sig != NULL && (sig->flags & TYG_SIG_VARIADIC) && sig->count > 0) tg_c_puts(b, ", ...");
+	tg_c_puts(b, ")");
+	tg_array_add(b, (u8)0);
+	b->count--; // zero terminated, for tg_c_type_decl
+}
+
+// Whether two types are one C type: records and arrays are by identity, see tg_c_record.
+TG_INTERNAL bool tg_c_type_same(tyg_type const *a, tyg_type const *b) {
+	if (a == b) return true;
+	if (a == NULL || b == NULL || a->kind != b->kind || a->kind == tgT_Record || a->kind == tgT_Array) return false;
+	return a->kind != tgT_Int || (a->bits == b->bits && a->is_signed == b->is_signed);
+}
+
+// Whether two signatures declare the same C function type.
+TG_INTERNAL bool tg_c_sig_equal(tyg_sig const *a, tyg_sig const *b) {
+	if (a == b) return true;
+	if (a == NULL || b == NULL || a->count != b->count || ((a->flags ^ b->flags) & TYG_SIG_VARIADIC)) return false;
+	if (!tg_c_type_same(a->ret, b->ret)) return false;
+	for (i32 i = 0; i < a->count; i++) {
+		if (!tg_c_type_same(a->params[i], b->params[i])) return false;
+	}
+	return true;
+}
+
+// Prints the prototype of a function symbol, without the semicolon, or with `def` the
+// header of its definition, whose parameters are p0, p1, ...
+TG_INTERNAL void tg_c_proto(tgModule *m, tgBytes *b, i32 sym, bool def) {
 	tgSymbol const *s = &m->symbols.data[sym];
 	tyg_sig const *sig = tg_c_sym_sig(m, sym);
 	if (sig == NULL && s->alias_of != 0) sig = tg_c_sym_sig(m, (i32)(tg_alias_target(m, sym) - m->symbols.data));
 	if (sig != NULL && (sig->flags & TYG_SIG_NORETURN)) tg_c_puts(b, "TYG_NORETURN ");
-	tg_c_attrs(m, b, sym, tg_c_storage(s, s->section != tgSection_Undef));
+	if (sig != NULL && (sig->flags & TYG_SIG_RETURNS_TWICE)) tg_c_puts(b, "TYG_RETURNS_TWICE ");
+	char const *storage = tg_c_storage(s, s->section != tgSection_Undef);
+	tg_c_attrs(m, b, sym, def && strcmp(storage, "extern ") == 0 ? "" : storage);
 	tgBytes params, d;
 	memset(&params, 0, sizeof(params));
 	memset(&d, 0, sizeof(d));
-	tg_c_puts(&params, "(");
-	if (sig == NULL || (sig->count == 0 && !(sig->flags & TYG_SIG_VARIADIC))) tg_c_puts(&params, "void");
-	for (i32 i = 0; sig != NULL && i < sig->count; i++) {
-		if (i > 0) tg_c_puts(&params, ", ");
-		tg_c_type_decl(m, &params, sig->params[i], "");
-	}
-	if (sig != NULL && (sig->flags & TYG_SIG_VARIADIC) && sig->count > 0) tg_c_puts(&params, ", ...");
-	tg_c_puts(&params, ")");
-	tg_array_add(&params, (u8)0);
-	tg_c_sym_declarator(m, &d, sym, (char const *)params.data);
+	tg_c_params(m, &params, sig, def);
+	tg_c_sym_declarator(m, &d, sym, (char const *)params.data, !def);
 	tg_array_add(&d, (u8)0);
 	tg_c_type_decl(m, b, sig ? sig->ret : tyg_type_scalar(m, TYG_VOID), (char const *)d.data);
 	tg_array_free(&params);
@@ -436,7 +495,7 @@ TG_INTERNAL void tg_c_data_decl(tgModule *m, tgBytes *b, i32 sym, i32 data, bool
 		tg_c_printf(b, "struct tyg_d%d ", data);
 		suffix[0] = 0;
 	}
-	tg_c_sym_declarator(m, b, sym, suffix);
+	tg_c_sym_declarator(m, b, sym, suffix, true);
 }
 
 // Prints the struct tyg_d<sym> of a symbol's initialized data and the data's initializer:
@@ -504,6 +563,373 @@ TG_INTERNAL bool tg_c_data_struct(tgModule *m, tgBytes *types, tgBytes *init, i3
 }
 
 ////////////////////////////////////////////////////////////////
+// Procedures
+//
+// tyg_proc_end prints the builder's IR as one C function: every local is a byte array and
+// every vreg a variable, both declared at the top since the blocks are labels that gotos
+// reach. A vreg has an unsigned type, so that arithmetic wraps, and a pointer is a uint64_t.
+////////////////////////////////////////////////////////////////
+
+static char const *const tg_c_utypes[tgType_COUNT] = {"void", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "float", "double", "void"};
+static char const *const tg_c_itypes[tgType_COUNT] = {"void", "int8_t", "int16_t", "int32_t", "int64_t", "float", "double", "void"};
+
+// The C operators of the tgCond conditions, signed or not by the casts around them.
+static char const *const tg_c_conds[] = {"==", "!=", "<", "<=", ">", ">=", "<", "<=", ">", ">=", "==", "!=", "<", "<=", ">", ">="};
+
+// Prints a memory operand as a char * expression.
+TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m) {
+	char off[32] = "";
+	if (m.offset != 0) snprintf(off, sizeof(off), " %c %lld", m.offset < 0 ? '-' : '+', m.offset < 0 ? -(long long)m.offset : (long long)m.offset);
+	switch (m.kind) {
+	case tgMem_Reg:   tg_c_printf(b, "((char *)(uintptr_t)v%u%s)", m.base, off); return;
+	case tgMem_Local: tg_c_printf(b, "((char *)l%u%s)", m.base, off); return;
+	case tgMem_Sym:
+		// ISO C converts a function pointer to an integer, not to a data pointer
+		tg_c_printf(b, tg_c_is_func(p->m, (i32)m.base) ? "((char *)(uintptr_t)&%s%s)" : "((char *)&%s%s)", tg_c_sym_name(p->m, (i32)m.base).text, off);
+		return;
+	}
+	tg_fail(p, "C output: incoming stack memory is not supported");
+}
+
+// Fails the procedure on an op the C output does not print yet.
+TG_INTERNAL void tg_c_unsupported(tgProc *p, tgOp op) {
+	char const *name = op < tgOp_COUNT ? tg_op_names[op] : "?";
+	usize n = strlen(name) + 40;
+	char *msg = tg_alloc_items(char, n); // in the procedure's arena, which lives until the error is set
+	snprintf(msg, n, "C output: %s is not supported yet", name);
+	tg_fail(p, msg);
+}
+
+// Prints the value of type t at memory m: `*(T *)(m)`.
+TG_INTERNAL void tg_c_mem_val(tgProc *p, tgBytes *b, tyg_type const *t, tgMem m) {
+	tg_c_puts(b, "*(");
+	tg_c_type_decl(p->m, b, t, "*");
+	tg_c_puts(b, ")");
+	tg_c_mem(p, b, m);
+}
+
+// Prints a call's expression: the callee by its name when its prototype has the call's
+// signature, else through a pointer to a function of the signature's type.
+TG_INTERNAL void tg_c_call_expr(tgProc *p, tgBytes *b, tgCall const *call) {
+	tgModule *m = p->m;
+	tyg_sig const *sig = call->c->sig;
+	tyg_type const *rt = sig->ret != NULL ? sig->ret : tyg_type_scalar(m, TYG_VOID);
+	if (call->target_sym >= 0 && tg_c_sig_equal(tg_c_sym_sig(m, call->target_sym), sig)) {
+		tg_c_puts(b, tg_c_sym_name(m, call->target_sym).text);
+	} else {
+		tgBytes d;
+		memset(&d, 0, sizeof(d));
+		tg_c_puts(&d, "(*)");
+		tg_c_params(m, &d, sig, false);
+		tg_c_puts(b, "((");
+		tg_c_type_decl(m, b, rt, (char const *)d.data);
+		if (call->target_sym >= 0) tg_c_printf(b, ")(uintptr_t)&%s)", tg_c_sym_name(m, call->target_sym).text);
+		else tg_c_printf(b, ")(uintptr_t)v%u)", call->target_vreg);
+		tg_array_free(&d);
+	}
+	tg_c_puts(b, "(");
+	for (isize i = 0; i < call->args.count; i++) {
+		tgCallArg const *a = &call->args.data[i];
+		tyg_type const *t = call->c->values[i].type;
+		if (i > 0) tg_c_puts(b, ", ");
+		if (a->kind == tgCallArg_StackMem) {
+			tg_c_mem_val(p, b, t, a->mem);
+		} else if (t->kind == tgT_Ptr) {
+			tg_c_printf(b, "(void *)(uintptr_t)v%u", a->vreg);
+		} else {
+			tg_c_puts(b, "(");
+			tg_c_type_decl(m, b, t, "");
+			tg_c_printf(b, ")v%u", a->vreg);
+		}
+	}
+	tg_c_puts(b, ");");
+}
+
+// Prints a call as a statement, its result stored to its vreg or memory.
+TG_INTERNAL void tg_c_call(tgProc *p, tgBytes *b, tgCall const *call) {
+	tyg_sig const *sig = call->c->sig;
+	if ((sig->flags & TYG_SIG_VARIADIC) && sig->count == 0) {
+		tg_fail(p, "C output: a variadic signature needs a named parameter");
+		return;
+	}
+	if (call->result_vreg != 0 && sig->ret->kind == tgT_Ptr) {
+		tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)", call->result_vreg);
+	} else if (call->result_vreg != 0) {
+		tg_c_printf(b, "v%u = (%s)", call->result_vreg, tg_c_utypes[p->vregs.data[call->result_vreg]]);
+	} else if (call->rets.count == 1) {
+		tg_c_mem_val(p, b, sig->ret, call->rets.data[0].dst);
+		tg_c_puts(b, " = ");
+	} else if (sig->ret != NULL && sig->ret->kind != tgT_Void) {
+		tg_c_puts(b, "(void)");
+	}
+	tg_c_call_expr(p, b, call);
+}
+
+// Prints `return` with the procedure's result: the value of a Ret, or a zero one for a Ret
+// without a value in a procedure that has a result, which C does not allow.
+TG_INTERNAL void tg_c_ret(tgProc *p, tgBytes *b, tgInstr const *in) {
+	tgCall const *call = &p->calls.data[in->imm];
+	tyg_type const *rt = p->sig->ret;
+	if (rt == NULL || rt->kind == tgT_Void) {
+		tg_c_puts(b, "return;");
+	} else if (call->args.count == 1 && call->args.data[0].kind == tgCallArg_StackMem) {
+		tg_c_puts(b, "return ");
+		tg_c_mem_val(p, b, rt, call->args.data[0].mem);
+		tg_c_puts(b, ";");
+	} else if (call->args.count == 1 && rt->kind == tgT_Ptr) {
+		tg_c_printf(b, "return (void *)(uintptr_t)v%u;", call->args.data[0].vreg);
+	} else if (tg_t_is_scalar(rt) || rt->kind == tgT_F80) {
+		tg_c_puts(b, "return (");
+		tg_c_type_decl(p->m, b, rt, "");
+		if (call->args.count == 1) tg_c_printf(b, ")v%u;", call->args.data[0].vreg);
+		else tg_c_puts(b, ")0;");
+	} else {
+		tg_c_puts(b, "{ ");
+		tg_c_type_decl(p->m, b, rt, "tyg_r");
+		tg_c_puts(b, "; memset(&tyg_r, 0, sizeof(tyg_r)); return tyg_r; }");
+	}
+}
+
+// Prints one instruction as a statement. `line` and `file` are the last #line's.
+TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line, i32 *file) {
+	tgModule *m = p->m;
+	tgType t = in->dst != 0 ? p->vregs.data[in->dst] : in->type;
+	i32 size = tg_type_size(t);
+	char const *T = tg_c_utypes[t], *S = tg_c_itypes[t];
+	// what a narrow value computes in, unsigned: uint16_t * uint16_t is an int that overflows
+	char const *W = size == 8 ? "uint64_t" : "uint32_t", *SW = size == 8 ? "int64_t" : "int32_t";
+	char const *op = NULL;
+	u32 d = in->dst, a = in->a, c = in->c;
+	unsigned shift_mask = size == 8 ? 63 : 31; // the x86 shifts, see tg_fold_shift
+	char const *amp = p->c_returns_twice ? "(void *)&" : "&"; // memcpy of a volatile vreg
+	switch (in->op) {
+	case tgOp_Nop:
+	case tgOp_Scope:
+		return;
+	case tgOp_Loc:
+		if (in->imm <= 0 || in->a == 0 || (isize)in->a > m->files.count) return;
+		if ((i32)in->imm == *line && (i32)in->a == *file) return;
+		*line = (i32)in->imm;
+		*file = (i32)in->a;
+		tg_c_printf(b, "#line %d ", *line);
+		tg_c_string(b, m->files.data[in->a - 1]);
+		tg_c_puts(b, "\n");
+		return;
+	}
+	tg_c_puts(b, "\t");
+	switch (in->op) {
+	case tgOp_Param: {
+		tyg_type const *pt = p->sig->params[in->imm];
+		if (tg_t_scalar(pt) == tgType_None) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)&p%d;", d, (int)in->imm);
+		else if (pt->kind == tgT_Ptr) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)p%d;", d, (int)in->imm);
+		else tg_c_printf(b, "v%u = (%s)p%d;", d, T, (int)in->imm);
+		break;
+	}
+	case tgOp_IConst: {
+		unsigned long long k = (u64)in->imm & tg_width_mask(t);
+		tg_c_printf(b, size == 8 ? "v%u = UINT64_C(0x%llx);" : "v%u = 0x%llxu;", d, k);
+		break;
+	}
+	case tgOp_FConst: {
+		f64 x = 0;
+		if (t == tgType_F32) {
+			u32 bits = (u32)in->imm;
+			f32 f;
+			memcpy(&f, &bits, 4);
+			x = f;
+		} else {
+			memcpy(&x, &in->imm, 8);
+		}
+		if (x - x == 0) tg_c_printf(b, "v%u = %a%s;", d, x, t == tgType_F32 ? "f" : ""); // finite: a hex float, exact
+		else if (t == tgType_F32) tg_c_printf(b, "{ uint32_t tyg_t = 0x%xu; memcpy(%sv%u, &tyg_t, 4); }", (unsigned)in->imm, amp, d);
+		else tg_c_printf(b, "{ uint64_t tyg_t = UINT64_C(0x%llx); memcpy(%sv%u, &tyg_t, 8); }", (unsigned long long)in->imm, amp, d);
+		break;
+	}
+	case tgOp_Lea:
+		tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)", d);
+		tg_c_mem(p, b, in->mem);
+		tg_c_puts(b, ";");
+		break;
+	// after a setjmp returns again only volatile accesses see what changed since its first return
+	case tgOp_Load:
+		if ((in->flags & tgInstrFlag_Volatile) || p->c_returns_twice) {
+			tg_c_printf(b, "v%u = *(volatile %s *)", d, T);
+			tg_c_mem(p, b, in->mem);
+			tg_c_puts(b, ";");
+		} else {
+			tg_c_printf(b, "memcpy(&v%u, ", d);
+			tg_c_mem(p, b, in->mem);
+			tg_c_printf(b, ", %d);", size);
+		}
+		break;
+	case tgOp_Store:
+		if ((in->flags & tgInstrFlag_Volatile) || p->c_returns_twice) {
+			tg_c_printf(b, "*(volatile %s *)", T);
+			tg_c_mem(p, b, in->mem);
+			tg_c_printf(b, " = v%u;", a);
+		} else {
+			tg_c_puts(b, "memcpy(");
+			tg_c_mem(p, b, in->mem);
+			tg_c_printf(b, ", &v%u, %d);", a, size);
+		}
+		break;
+	case tgOp_Copy: tg_c_printf(b, "v%u = v%u;", d, a); break;
+	case tgOp_Add: op = "+"; goto wrap;
+	case tgOp_Sub: op = "-"; goto wrap;
+	case tgOp_Mul: op = "*"; goto wrap;
+	case tgOp_And: op = "&"; goto wrap;
+	case tgOp_Or:  op = "|"; goto wrap;
+	case tgOp_Xor: op = "^"; goto wrap;
+	wrap:
+		tg_c_printf(b, "v%u = (%s)((%s)v%u %s (%s)v%u);", d, T, W, a, op, W, in->b);
+		break;
+	case tgOp_UDiv: tg_c_printf(b, "v%u = (%s)(v%u / v%u);", d, T, a, in->b); break;
+	case tgOp_URem: tg_c_printf(b, "v%u = (%s)(v%u %% v%u);", d, T, a, in->b); break;
+	case tgOp_SDiv: tg_c_printf(b, "v%u = (%s)((%s)v%u / (%s)v%u);", d, T, S, a, S, in->b); break;
+	case tgOp_SRem: tg_c_printf(b, "v%u = (%s)((%s)v%u %% (%s)v%u);", d, T, S, a, S, in->b); break;
+	case tgOp_Shl:  tg_c_printf(b, "v%u = (%s)((%s)v%u << (v%u & %u));", d, T, W, a, in->b, shift_mask); break;
+	case tgOp_LShr: tg_c_printf(b, "v%u = (%s)((%s)v%u >> (v%u & %u));", d, T, W, a, in->b, shift_mask); break;
+	case tgOp_AShr: tg_c_printf(b, "v%u = (%s)((%s)(%s)v%u >> (v%u & %u));", d, T, SW, S, a, in->b, shift_mask); break;
+	case tgOp_FAdd: tg_c_printf(b, "v%u = v%u + v%u;", d, a, in->b); break;
+	case tgOp_FSub: tg_c_printf(b, "v%u = v%u - v%u;", d, a, in->b); break;
+	case tgOp_FMul: tg_c_printf(b, "v%u = v%u * v%u;", d, a, in->b); break;
+	case tgOp_FDiv: tg_c_printf(b, "v%u = v%u / v%u;", d, a, in->b); break;
+	case tgOp_Neg:  tg_c_printf(b, "v%u = (%s)(0u - v%u);", d, T, a); break;
+	case tgOp_Not:  tg_c_printf(b, "v%u = (%s)~v%u;", d, T, a); break;
+	case tgOp_FNeg: tg_c_printf(b, "v%u = -v%u;", d, a); break;
+	case tgOp_ICmp:
+	case tgOp_FCmp: {
+		bool is_signed = in->aux >= tgCond_SLT && in->aux <= tgCond_SGE;
+		char const *cast = is_signed ? tg_c_itypes[in->type] : "";
+		if (in->aux >= tg_count_of(tg_c_conds)) {
+			tg_fail(p, "C output: invalid condition");
+			break;
+		}
+		tg_c_printf(b, is_signed ? "v%u = (uint8_t)((%s)v%u %s (%s)v%u);" : "v%u = (uint8_t)(%sv%u %s %sv%u);",
+		            d, cast, a, tg_c_conds[in->aux], cast, in->b);
+		break;
+	}
+	case tgOp_Sext:  tg_c_printf(b, "v%u = (%s)(%s)(%s)v%u;", d, T, S, tg_c_itypes[in->aux], a); break;
+	case tgOp_SIToF: tg_c_printf(b, "v%u = (%s)(%s)v%u;", d, T, tg_c_itypes[in->aux], a); break;
+	// through a 32 or 64-bit integer, like the lowerings: out of its range it stays undefined
+	case tgOp_FToSI: tg_c_printf(b, "v%u = (%s)(%s)v%u;", d, T, SW, a); break;
+	case tgOp_FToUI:
+		if (size == 8) tg_c_printf(b, "v%u = (%s)v%u;", d, T, a);
+		else tg_c_printf(b, "v%u = (%s)(int64_t)v%u;", d, T, a);
+		break;
+	case tgOp_Zext:
+	case tgOp_Trunc:
+	case tgOp_UIToF:
+	case tgOp_FExt:
+	case tgOp_FTrunc:
+		tg_c_printf(b, "v%u = (%s)v%u;", d, T, a);
+		break;
+	case tgOp_Bitcast: tg_c_printf(b, "memcpy(%sv%u, %sv%u, %d);", amp, d, amp, a, size); break;
+	case tgOp_Select:  tg_c_printf(b, "v%u = v%u ? v%u : v%u;", d, a, in->b, c); break;
+	case tgOp_MemCopy:
+	case tgOp_MemMove:
+		tg_c_printf(b, "%s((void *)(uintptr_t)v%u, (void *)(uintptr_t)v%u, %lld);", in->op == tgOp_MemCopy ? "memcpy" : "memmove", a, in->b, (long long)in->imm);
+		break;
+	case tgOp_MemZero:
+		tg_c_puts(b, "memset(");
+		tg_c_mem(p, b, in->mem);
+		tg_c_printf(b, ", 0, %lld);", (long long)in->imm);
+		break;
+	case tgOp_MemCopyDyn:
+	case tgOp_MemMoveDyn:
+		tg_c_printf(b, "%s((void *)(uintptr_t)v%u, (void *)(uintptr_t)v%u, (size_t)v%u);", in->op == tgOp_MemCopyDyn ? "memcpy" : "memmove", a, in->b, c);
+		break;
+	case tgOp_MemSetDyn:
+		tg_c_printf(b, "memset((void *)(uintptr_t)v%u, (int)v%u, (size_t)v%u);", a, in->b, c);
+		break;
+	case tgOp_Jump:        tg_c_printf(b, "goto B%d;", (int)in->imm); break;
+	case tgOp_Branch:      tg_c_printf(b, "if (v%u) goto B%d; else goto B%u;", a, (int)in->imm, c); break;
+	case tgOp_Ret:         tg_c_ret(p, b, in); break;
+	case tgOp_Call:
+		if (p->calls.data[in->imm].c == NULL) tg_c_unsupported(p, in->op);
+		else tg_c_call(p, b, &p->calls.data[in->imm]);
+		break;
+	case tgOp_VaStart: tg_c_printf(b, "va_start(*(va_list *)(uintptr_t)v%u, p%d);", a, p->sig->count - 1); break;
+	case tgOp_VaCopy:  tg_c_printf(b, "va_copy(*(va_list *)(uintptr_t)v%u, *(va_list *)(uintptr_t)v%u);", a, in->b); break;
+	case tgOp_VaArg: {
+		// fetched as the type the C default argument promotions give it
+		tyg_type const *vt = p->c_va_types.data[in->imm];
+		char const *promoted = vt->kind == tgT_F32 ? "double" : vt->kind == tgT_Int && vt->bits < 32 ? "int32_t" : NULL;
+		tg_c_printf(b, "tyg_va%d = ", (int)in->imm);
+		if (promoted != NULL) {
+			tg_c_puts(b, "(");
+			tg_c_type_decl(m, b, vt, "");
+			tg_c_puts(b, ")");
+		}
+		tg_c_printf(b, "va_arg(*(va_list *)(uintptr_t)v%u, ", a);
+		if (promoted != NULL) tg_c_puts(b, promoted);
+		else tg_c_type_decl(m, b, vt, "");
+		tg_c_printf(b, "); v%u = (uint64_t)(uintptr_t)&tyg_va%d;", d, (int)in->imm);
+		break;
+	}
+	case tgOp_Unreachable: tg_c_puts(b, "TYG_UNREACHABLE();"); break;
+	case tgOp_Trap:        tg_c_puts(b, "TYG_TRAP();"); break;
+	case tgOp_DebugTrap:   tg_c_puts(b, "TYG_DEBUG_TRAP();"); break;
+	default:
+		tg_c_unsupported(p, in->op);
+		break;
+	}
+	tg_c_puts(b, "\n");
+}
+
+// Prints the procedure being ended into m->c_procs, or on failure sets p->fail_reason and
+// leaves m->c_procs as it was. The symbol counts as defined, for the definition's storage.
+TG_INTERNAL bool tg_c_proc(tgProc *p) {
+	tgModule *m = p->m;
+	tgBytes b;
+	memset(&b, 0, sizeof(b));
+	tg_c_proto(m, &b, p->sym, true);
+	tg_c_puts(&b, " {\n");
+	// what changes between a setjmp and its longjmp is lost unless volatile
+	char const *vol = p->c_returns_twice ? "volatile " : "";
+	for (isize i = 0; i < p->locals.count; i++) {
+		tgLocal const *l = &p->locals.data[i];
+		i64 align = l->over_align ? l->over_align : l->align;
+		tg_c_printf(&b, "\tTYG_ALIGNED(%lld) %sunsigned char l%d[%lld];\n", (long long)tg_max(align, (i64)1), vol, (int)i, (long long)tg_max(l->size, (i64)1));
+	}
+	for (isize v = 1; v < p->vregs.count; v++) {
+		tgType t = p->vregs.data[v];
+		if (t != tgType_None) tg_c_printf(&b, "\tTYG_UNUSED %s%s v%d;\n", vol, tg_c_utypes[t], (int)v);
+	}
+	for (isize i = 0; i < p->c_va_types.count; i++) {
+		char name[32];
+		snprintf(name, sizeof(name), "tyg_va%d", (int)i);
+		tg_c_puts(&b, "\t");
+		tg_c_type_decl(m, &b, p->c_va_types.data[i], name);
+		tg_c_puts(&b, ";\n");
+	}
+	// a label for each block a jump reaches, -Wall warns of the others; tg_end_proc made sure
+	// that those are placed. The blocks that are not hold dead code.
+	bool *target = tg_alloc_items(bool, p->blocks.count + 1);
+	memset(target, 0, sizeof(bool) * (usize)(p->blocks.count + 1));
+	for (isize bi = 0; bi < p->order.count; bi++) {
+		tgBlock const *blk = p->order.data[bi];
+		tgInstr const *last = blk->instrs.count > 0 ? &blk->instrs.data[blk->instrs.count - 1] : NULL;
+		if (last != NULL && (last->op == tgOp_Jump || last->op == tgOp_Branch)) target[last->imm] = true;
+		if (last != NULL && last->op == tgOp_Branch) target[last->c] = true;
+	}
+	i32 line = 0, file = 0;
+	for (isize bi = 0; bi < p->order.count && p->fail_reason == NULL; bi++) {
+		tgBlock *blk = p->order.data[bi];
+		if (!tg_block_terminated(blk)) {
+			tg_fail(p, "C output: a block does not end in a terminator");
+			break;
+		}
+		if (target[blk->index]) tg_c_printf(&b, "B%d:;\n", blk->index);
+		for (isize ii = 0; ii < blk->instrs.count; ii++) tg_c_instr(p, &b, &blk->instrs.data[ii], &line, &file);
+	}
+	tg_c_puts(&b, "}\n");
+	if (p->fail_reason == NULL) tg_array_add_elems(&m->c_procs, b.data, b.count);
+	tg_array_free(&b);
+	return p->fail_reason == NULL;
+}
+
+////////////////////////////////////////////////////////////////
 // The translation unit
 ////////////////////////////////////////////////////////////////
 
@@ -517,7 +943,7 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 		tgSymbol const *s = &m->symbols.data[i];
 		i32 data = s->alias_of != 0 ? (i32)(tg_alias_target(m, i) - m->symbols.data) : i;
 		if (tg_c_is_func(m, data)) {
-			tg_c_proto(m, &decls, i);
+			tg_c_proto(m, &decls, i, false);
 		} else {
 			tg_c_data_decl(m, &decls, i, data, false);
 		}
@@ -527,6 +953,12 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 			tg_c_puts(&decls, ")");
 		}
 		tg_c_puts(&decls, ";\n");
+		if (s->section == tgSection_Undef && s->common_align == 0 && s->alias_of == 0 && tg_c_sym_name(m, i).text != s->name.text) {
+			// MSVC has no asm labels
+			tg_c_printf(&decls, "TYG_ALTERNATE_NAME(%s, ", tg_c_sym_name(m, i).text);
+			tg_c_string(&decls, s->name);
+			tg_c_puts(&decls, ")\n");
+		}
 		if (s->alias_of != 0 || s->common_align != 0 || s->section == tgSection_Undef || tg_c_is_func(m, i)) continue;
 		tg_c_data_decl(m, &defs, i, i, true);
 		if (tg_section_is_nobits(m, s->section)) tg_c_puts(&defs, " = {0}");

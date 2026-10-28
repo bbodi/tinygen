@@ -346,7 +346,19 @@ TG_INTERNAL void tg_emit_ret(tgProc *p, bool has_value, u32 val, tgMem direct_re
 	tgInstr i;
 	memset(&args, 0, sizeof(args));
 	args.arena = tg_arena();
-	if (abi->has_sret && !tg_is_arm64()) {
+	if (tg_is_c_output()) {
+		// C output has no abi: the value, or the memory holding it, is the one argument,
+		// which the IR checks see
+		if (has_value) {
+			tgCallArg a;
+			memset(&a, 0, sizeof(a));
+			a.kind = val != 0 ? tgCallArg_Gpr : tgCallArg_StackMem;
+			a.type = p->vregs.data[val];
+			a.vreg = val;
+			a.mem = direct_result;
+			tg_array_add(&args, a);
+		}
+	} else if (abi->has_sret && !tg_is_arm64()) {
 		// x86-64 hands the sret pointer back in rax
 		tgCallArg a;
 		memset(&a, 0, sizeof(a));

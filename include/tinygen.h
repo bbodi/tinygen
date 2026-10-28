@@ -83,9 +83,10 @@ enum {
 void tyg_module_language(tyg_module *m, unsigned dwarf_language);
 
 /* Writes the object file, or the C source with TYG_OUTPUT_C. Returns 0 on success.
- * The C output does not have procedures yet: tyg_proc_begin fails. Named sections,
- * aliases, common, weak and the visibilities become attributes of the C compiler,
- * which decides whether the platform has them. */
+ * In the C output, atomics, alloca, long double arithmetic and the intrinsics are not
+ * supported yet: the procedure fails. Named sections, aliases, common, weak and the
+ * visibilities become attributes of the C compiler, which decides whether the
+ * platform has them. */
 int tyg_module_write(tyg_module *m, const char *path);
 /* The object file (or C source) in memory, valid until tyg_module_free. */
 int tyg_module_emit(tyg_module *m, const uint8_t **bytes, size_t *size);
@@ -201,7 +202,8 @@ const tyg_type *tyg_type_record(tyg_module *m, int64_t size, int64_t align,
 int64_t tyg_type_size(const tyg_type *t);
 int64_t tyg_type_align(const tyg_type *t);
 
-/* The size and alignment of the target's va_list, for the front end's layout. */
+/* The size and alignment of the target's va_list, for the front end's layout. With
+ * TYG_OUTPUT_C it is the platform C compiler's sizeof(va_list). */
 int64_t tyg_va_list_size(tyg_module *m);
 int64_t tyg_va_list_align(tyg_module *m);
 

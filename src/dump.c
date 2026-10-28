@@ -16,7 +16,7 @@ static char const *const tg_op_names[tgOp_COUNT] = {
 	"rdcycle", "cpurelax", "prefetch", "stackptr", "frameaddr", "retaddr", "sqrt", "fma",
 	"bswap", "popcount", "ctz", "clz", "syscall", "mulovf", "mulhiu", "cpuid", "xgetbv",
 	"vec128", "valgrind", "alloca", "tlsaddr", "ftohalf", "halftof",
-	"stackrestore", "x87",
+	"stackrestore", "x87", "param", "vastart", "vaarg", "vacopy",
 };
 
 static char const *const tg_type_names[tgType_COUNT] = {"none", "i8", "i16", "i32", "i64", "f32", "f64", "v128"};

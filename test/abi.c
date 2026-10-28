@@ -20,10 +20,13 @@
 static tyg_module *m;
 static tyg_file file;
 
+static int c_failed = -1; // the "c" target goes on after a failure and counts it
+
 static void check(int failed) {
 	if (failed) {
 		fprintf(stderr, "tinygen: %s\n", tyg_error(m));
-		exit(1);
+		if (c_failed < 0) exit(1);
+		c_failed++;
 	}
 }
 
@@ -970,6 +973,11 @@ int main(int argc, char **argv) {
 		t.arch = TYG_ARCH_X64; t.os = TYG_OS_DARWIN;
 	} else if (strcmp(target, "windows") == 0) {
 		t.arch = TYG_ARCH_X64; t.os = TYG_OS_WINDOWS;
+	} else if (strcmp(target, "c") == 0) {
+		// C source for the host; every failing procedure is reported
+		t = tyg_host_target();
+		t.output = TYG_OUTPUT_C;
+		c_failed = 0;
 	} else {
 		fprintf(stderr, "unknown target %s\n", target);
 		return 1;
@@ -1000,5 +1008,5 @@ int main(int argc, char **argv) {
 	else build_ld();
 	check(tyg_module_write(m, argc > 1 ? argv[1] : "abi.o"));
 	tyg_module_free(m);
-	return 0;
+	return c_failed > 0;
 }
