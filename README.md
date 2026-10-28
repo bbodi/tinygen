@@ -161,8 +161,9 @@ shows the source variables in a debugger.
 
 The C keeps the IR's meaning under an optimizing compiler: integer arithmetic is
 done in unsigned types so it wraps, shift counts are masked as the lowerings mask
-them, loads and stores go through `memcpy` unless volatile, aggregates move
-through `memcpy` helpers, and a procedure that calls a `TYG_SIG_RETURNS_TWICE`
+them, scalar loads and stores go through `memcpy` unless volatile (the
+`TYG_LD`/`TYG_ST` macros; TinyCC gets a direct access instead, it has no
+aliasing rules and calls memcpy), aggregates move through `memcpy` helpers, and a procedure that calls a `TYG_SIG_RETURNS_TWICE`
 function makes its accesses volatile. What the IR leaves undefined stays
 undefined in C too: division by zero, `INT_MIN / -1`, and a float to integer
 conversion out of range.

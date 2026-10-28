@@ -127,6 +127,25 @@ static char const tg_c_prelude[] =
 	"#define TYG_EXPORT\n"
 	"#define TYG_ALIAS(target)\n"
 	"#endif\n"
+	// scalar loads (LD), stores (ST) and bitcasts (MV) of 1, 2, 4 and 8 bytes: memcpy, which the
+	// compilers turn into plain moves; TinyCC would call it, and has no aliasing rules to break
+	"#if defined(__TINYC__)\n"
+	"#define TYG_LD_(n, dst, p) (*(uint##n##_t *)(dst) = *(uint##n##_t *)(p))\n"
+	"#else\n"
+	"#define TYG_LD_(n, dst, p) ((void)memcpy((dst), (p), (n) / 8))\n"
+	"#endif\n"
+	"#define TYG_LD8(dst, p) TYG_LD_(8, dst, p)\n"
+	"#define TYG_LD16(dst, p) TYG_LD_(16, dst, p)\n"
+	"#define TYG_LD32(dst, p) TYG_LD_(32, dst, p)\n"
+	"#define TYG_LD64(dst, p) TYG_LD_(64, dst, p)\n"
+	"#define TYG_ST8(p, src) TYG_LD_(8, p, src)\n"
+	"#define TYG_ST16(p, src) TYG_LD_(16, p, src)\n"
+	"#define TYG_ST32(p, src) TYG_LD_(32, p, src)\n"
+	"#define TYG_ST64(p, src) TYG_LD_(64, p, src)\n"
+	"#define TYG_MV8(dst, src) TYG_LD_(8, dst, src)\n"
+	"#define TYG_MV16(dst, src) TYG_LD_(16, dst, src)\n"
+	"#define TYG_MV32(dst, src) TYG_LD_(32, dst, src)\n"
+	"#define TYG_MV64(dst, src) TYG_LD_(64, dst, src)\n"
 	"#if defined(__TINYC__)\n" // TinyCC takes the gcc branch, but has no __builtin_trap, no brk and no __USER_LABEL_PREFIX__
 	"#undef TYG_TRAP\n"
 	"#define TYG_TRAP() abort()\n"
@@ -225,8 +244,13 @@ static char const tg_c_intrin_prelude[] =
 
 // long double through memcpy: the operands are bytes in locals or anywhere else.
 static char const tg_c_ld_prelude[] =
+	"#if defined(__TINYC__)\n"
+	"static TYG_UNUSED TYG_F80 tyg_ld_get(uint64_t p) { return *(TYG_F80 *)(uintptr_t)p; }\n"
+	"static TYG_UNUSED void tyg_ld_set(uint64_t p, TYG_F80 x) { *(TYG_F80 *)(uintptr_t)p = x; }\n"
+	"#else\n"
 	"static TYG_UNUSED TYG_F80 tyg_ld_get(uint64_t p) { TYG_F80 x; memcpy(&x, (void *)(uintptr_t)p, sizeof(x)); return x; }\n"
-	"static TYG_UNUSED void tyg_ld_set(uint64_t p, TYG_F80 x) { memcpy((void *)(uintptr_t)p, &x, sizeof(x)); }\n";
+	"static TYG_UNUSED void tyg_ld_set(uint64_t p, TYG_F80 x) { memcpy((void *)(uintptr_t)p, &x, sizeof(x)); }\n"
+	"#endif\n";
 
 // The names of the tgRmwOp operations in the TYG_ATOMIC_<name>_<bits> macros.
 static char const *const tg_c_rmw_names[] = {"XCHG", "FETCH_ADD", "FETCH_SUB", "FETCH_AND", "FETCH_OR", "FETCH_XOR", "FETCH_NAND"};
@@ -510,8 +534,12 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 	}
 	// reading a struct out of a byte local through a cast breaks C's aliasing rules, so
 	// values move through memcpy, which the compilers turn into plain moves
+	tg_c_printf(&b, "#if defined(__TINYC__)\n"
+	                "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { return *(struct tyg_r%d const *)p; }\n"
+	                "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { *(struct tyg_r%d *)p = x; }\n"
+	                "#else\n", n, n, n, n, n, n);
 	tg_c_printf(&b, "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { struct tyg_r%d x; memcpy(&x, p, sizeof(x)); return x; }\n", n, n, n);
-	tg_c_printf(&b, "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { memcpy(p, &x, sizeof(x)); }\n", n, n);
+	tg_c_printf(&b, "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { memcpy(p, &x, sizeof(x)); }\n#endif\n", n, n);
 	tg_array_add_elems(&m->c_types, b.data, b.count);
 	tg_array_free(&b);
 	return n;
@@ -1168,6 +1196,11 @@ TG_INTERNAL void tg_c_ret(tgProc *p, tgBytes *b, tgInstr const *in) {
 	}
 }
 
+// Whether a scalar of `size` bytes has a TYG_LD/ST/MV macro.
+TG_INTERNAL bool tg_c_scalar_bits(i32 size) {
+	return size == 1 || size == 2 || size == 4 || size == 8;
+}
+
 // Prints an atomic access of `bits` to in->mem, see tg_c_atomics_prelude. A float load
 // goes through an integer.
 TG_INTERNAL void tg_c_atomic(tgProc *p, tgBytes *b, tgInstr const *in, int bits, char const *amp) {
@@ -1304,9 +1337,11 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			tg_c_mem(p, b, in->mem);
 			tg_c_puts(b, ";");
 		} else {
-			tg_c_printf(b, "memcpy(&v%u, ", d);
+			if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_LD%d(&v%u, ", size * 8, d);
+			else tg_c_printf(b, "memcpy(&v%u, ", d);
 			tg_c_mem(p, b, in->mem);
-			tg_c_printf(b, ", %d);", size);
+			if (tg_c_scalar_bits(size)) tg_c_puts(b, ");");
+			else tg_c_printf(b, ", %d);", size);
 		}
 		break;
 	case tgOp_Store:
@@ -1315,9 +1350,11 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			tg_c_mem(p, b, in->mem);
 			tg_c_printf(b, " = v%u;", a);
 		} else {
-			tg_c_puts(b, "memcpy(");
+			if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_ST%d(", size * 8);
+			else tg_c_puts(b, "memcpy(");
 			tg_c_mem(p, b, in->mem);
-			tg_c_printf(b, ", &v%u, %d);", a, size);
+			if (tg_c_scalar_bits(size)) tg_c_printf(b, ", &v%u);", a);
+			else tg_c_printf(b, ", &v%u, %d);", a, size);
 		}
 		break;
 	case tgOp_Copy: tg_c_printf(b, "v%u = v%u;", d, a); break;
@@ -1371,7 +1408,10 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	case tgOp_FTrunc:
 		tg_c_printf(b, "v%u = (%s)v%u;", d, T, a);
 		break;
-	case tgOp_Bitcast: tg_c_printf(b, "memcpy(%sv%u, %sv%u, %d);", amp, d, amp, a, size); break;
+	case tgOp_Bitcast:
+		if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_MV%d(%sv%u, %sv%u);", size * 8, amp, d, amp, a);
+		else tg_c_printf(b, "memcpy(%sv%u, %sv%u, %d);", amp, d, amp, a, size);
+		break;
 	case tgOp_Select:  tg_c_printf(b, "v%u = v%u ? v%u : v%u;", d, a, in->b, c); break;
 	case tgOp_MemCopy:
 	case tgOp_MemMove:
