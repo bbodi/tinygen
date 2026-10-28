@@ -139,6 +139,51 @@ For another target, fill a `tyg_target` instead of calling `tyg_host_target`.
 `test/smoke.c` shows the rest: control flow, memory, calls, varargs, thread
 locals and debug info.
 
+## C output
+
+tinygen can write C source instead of an object. Set `output` in the target:
+```c
+tyg_target t = tyg_host_target();
+t.output = TYG_OUTPUT_C;
+tyg_module *m = tyg_module_new(t, "add.c");
+/* the same calls as above */
+tyg_module_write(m, "add.tg.c");
+```
+The same front end then has both: a debug build straight from tinygen in
+milliseconds, and an optimized build by handing the C to any C compiler with
+`-O2`. The C is one self-contained C99 translation unit for the target's arch
+and os: a prelude of macros with gcc/clang and MSVC branches, every data symbol,
+and one C function per procedure, with the IR values as locals, blocks as labels
+and `tyg_loc` as `#line`, so compiler messages and the debugger point at the
+front end's source. Locals and parameters that the debug info names are declared
+with their names and C types built from the debug types, so an optimized build
+shows the source variables in a debugger.
+
+The C keeps the IR's meaning under an optimizing compiler: integer arithmetic is
+done in unsigned types so it wraps, shift counts are masked as the lowerings mask
+them, loads and stores go through `memcpy` unless volatile, aggregates move
+through `memcpy` helpers, and a procedure that calls a `TYG_SIG_RETURNS_TWICE`
+function makes its accesses volatile. What the IR leaves undefined stays
+undefined in C too: division by zero, `INT_MIN / -1`, and a float to integer
+conversion out of range.
+
+Not in the C output: `TYG_STACK_POINTER` and `TYG_STACK_RESTORE` (C cannot move
+the stack pointer; the procedure fails), 4 byte data relocations (C has no
+constant expression for a truncated address), and `tyg_data_reloc` into
+nothing but 8 byte slots. Named sections, aliases, common symbols, weak and the
+visibilities become attributes the C compiler decides on. A symbol whose name
+is not a C identifier gets an `asm` label on gcc and clang and a linker
+alternatename pragma on MSVC.
+
+On this Mac the bench module of 2000 procedures takes 43 ms to write as C
+against 40 ms as a native object; clang then needs 1.3 s at `-O0` and 2.7 s at
+`-O2` for the 300k lines, which is the trade the two outputs are for.
+
+`sh test/run.sh` writes `test/cgen.c`, smoke, abi and bench as C, compiles them
+with the system compiler at `-O0` and `-O2` and under UBSan, and runs the same
+mains against the C and the native object. The generated files are left in
+`build/test/obj/*-c.c`.
+
 ## Tests
 
 One command builds the generators, emits the objects of every target, and runs
