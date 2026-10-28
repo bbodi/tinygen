@@ -127,6 +127,18 @@ static char const tg_c_prelude[] =
 	"#define TYG_EXPORT\n"
 	"#define TYG_ALIAS(target)\n"
 	"#endif\n"
+	"#if defined(__TINYC__)\n" // TinyCC takes the gcc branch, but has no __builtin_trap, no brk and no __USER_LABEL_PREFIX__
+	"#undef TYG_TRAP\n"
+	"#define TYG_TRAP() abort()\n"
+	"#undef TYG_DEBUG_TRAP\n"
+	"#define TYG_DEBUG_TRAP() abort()\n"
+	"#undef TYG_ASM_NAME\n"
+	"#if defined(__leading_underscore)\n"
+	"#define TYG_ASM_NAME(name) __asm__(\"_\" name)\n"
+	"#else\n"
+	"#define TYG_ASM_NAME(name) __asm__(name)\n"
+	"#endif\n"
+	"#endif\n"
 	"#if defined(TYG_TARGET_WINDOWS)\n"
 	"typedef double TYG_F80;\n"
 	"#else\n"
@@ -190,6 +202,19 @@ static char const tg_c_intrin_prelude[] =
 	"#define TYG_CPU_RELAX() _mm_pause()\n"
 	"#endif\n"
 	"#endif\n"
+	"#if defined(__TINYC__)\n" // no __builtin_bswap or __builtin_ia32_pause; the rest it has
+	"#undef TYG_BSWAP_16\n"
+	"#undef TYG_BSWAP_32\n"
+	"#undef TYG_BSWAP_64\n"
+	"#undef TYG_CPU_RELAX\n"
+	"static TYG_UNUSED uint16_t tyg_bswap16(uint16_t x) { return (uint16_t)(x >> 8 | x << 8); }\n"
+	"static TYG_UNUSED uint32_t tyg_bswap32(uint32_t x) { return x >> 24 | (x >> 8 & 0xff00u) | (x << 8 & 0xff0000u) | x << 24; }\n"
+	"static TYG_UNUSED uint64_t tyg_bswap64(uint64_t x) { return (uint64_t)tyg_bswap32((uint32_t)x) << 32 | tyg_bswap32((uint32_t)(x >> 32)); }\n"
+	"#define TYG_BSWAP_16(x) tyg_bswap16(x)\n"
+	"#define TYG_BSWAP_32(x) tyg_bswap32(x)\n"
+	"#define TYG_BSWAP_64(x) tyg_bswap64(x)\n"
+	"#define TYG_CPU_RELAX() ((void)0)\n"
+	"#endif\n"
 	"#define TYG_BSWAP_8(x) (x)\n"
 	"#define TYG_POPCOUNT_8(x) TYG_POPCOUNT_32((uint32_t)(x))\n"
 	"#define TYG_POPCOUNT_16(x) TYG_POPCOUNT_32((uint32_t)(x))\n"
@@ -214,6 +239,9 @@ TG_INTERNAL void tg_c_atomics_prelude(tgBytes *b) {
 	static char const *const gnu[] = {"__atomic_exchange_n", "__atomic_fetch_add", "__atomic_fetch_sub", "__atomic_fetch_and", "__atomic_fetch_or", "__atomic_fetch_xor", "__atomic_fetch_nand"};
 	static char const *const ms[] = {"_InterlockedExchange", "_InterlockedExchangeAdd", "_InterlockedExchangeAdd", "_InterlockedAnd", "_InterlockedOr", "_InterlockedXor", NULL};
 	static char const *const ms_suffix[] = {"8", "16", "", "64"}, *const ms_type[] = {"char", "short", "long", "__int64"};
+	// TinyCC has the __atomic_ builtins of <stdatomic.h> and the fetch ones, not __atomic_exchange_n
+	tg_c_puts(b, "#if defined(__TINYC__)\n#include <stdatomic.h>\n"
+	             "#define __atomic_exchange_n(p, v, o) atomic_exchange_explicit((p), (v), (o))\n#endif\n");
 	tg_c_puts(b, "#if defined(__GNUC__) || defined(__clang__)\n#define TYG_FENCE() __atomic_thread_fence(__ATOMIC_SEQ_CST)\n");
 	for (int w = 0; w < 4; w++) {
 		int n = 8 << w;

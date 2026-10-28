@@ -174,6 +174,10 @@ nothing but 8 byte slots. Named sections, aliases, common symbols, weak and the
 visibilities become attributes the C compiler decides on. A symbol whose name
 is not a C identifier gets an `asm` label on gcc and clang and a linker
 alternatename pragma on MSVC.
+TinyCC takes the gcc branch of the prelude, with fallbacks for what it lacks:
+`abort()` for the traps, byte swaps in C, `<stdatomic.h>` for the atomics, and
+the `asm` label prefixed from `__leading_underscore`. Thread-local data still
+needs a TinyCC target that supports it (not its in-memory `-run`).
 
 On this Mac the bench module of 2000 procedures takes 43 ms to write as C
 against 40 ms as a native object; clang then needs 1.3 s at `-O0` and 2.7 s at
