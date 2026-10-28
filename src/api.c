@@ -76,6 +76,10 @@ void tyg_module_free(tyg_module *m) {
 	tg_map_free(&m->c_type_ids);
 	tg_array_free(&m->c_types);
 	tg_array_free(&m->c_procs);
+	tg_array_free(&m->c_dts);
+	tg_array_free(&m->c_dtypes);
+	tg_strmap_free(&m->c_dnames);
+	tg_strmap_free(&m->c_dtags);
 	tg_array_free(&m->output);
 	if (tg_arena_cur == &m->proc_arena) tg_arena_cur = NULL;
 	tg_arena_free(&m->proc_arena);

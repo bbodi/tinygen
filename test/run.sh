@@ -151,6 +151,26 @@ run_cgen() {
 	fi
 	if "$bin" > "$bin.log" 2>&1; then echo "cgen $1: $(tail -n 1 "$bin.log")"; else cat "$bin.log"; fail "run cgen $1"; fi
 }
+# check_c_names file: the debug variables of cgen.c's build_debug are C variables of their
+# debug types, the bitfield and packed records stay byte arrays, and the C compiles with -g.
+check_c_names() {
+	for decl in '^	int64_t total;$' '^	int32_t int_1;$' '^	int64_t v1_1;$' '^	int64_t total_1;$' \
+		'^	_Bool flag;$' '^	i16 small;$' '^int64_t dbg_scalars(int64_t a, int32_t b) {$' '^	int64_t a_1;$' \
+		'^int64_t dbg_point(struct tyg_r[0-9]* pt) {$' '^	struct Node node;$' '^	struct Node \*next;$' \
+		'^	enum Color color;$' '^	int32_t arr\[3\];$' '^	Count count;$' '^typedef int64_t Count;$'; do
+		grep -q "$decl" "$1" || fail "cgen C names: no line matches $decl"
+	done
+	# a pointer to struct Bits declares it, incomplete
+	for decl in 'struct Bits {' 'struct Bits bits' 'struct Packed'; do
+		! grep -q "$decl" "$1" || fail "cgen C names: '$decl', yet it has no C form"
+	done
+	if $cc -std=c99 -Wall -Wextra -g -O2 -c "$1" -o "$out/cgen-c-g.o" > "$out/cgen-c-g.log" 2>&1 && [ ! -s "$out/cgen-c-g.log" ]; then
+		echo "cgen C names: checked, compiles with -g -O2"
+	else
+		cat "$out/cgen-c-g.log"
+		fail "compile cgen C with -g -O2"
+	fi
+}
 c_start=$(date +%s)
 if [ -f "$out/obj/cgen-c.c" ]; then
 	echo "checking the C output"
@@ -166,6 +186,7 @@ if [ -f "$out/obj/cgen-c.c" ]; then
 		skipped="$skipped cgen-ubsan"
 	fi
 	[ ! -f "$out/obj/cgen-$host.o" ] || run_cgen "$host-O0" -O0 "$out/obj/cgen-$host.o"
+	check_c_names "$out/obj/cgen-c.c"
 	if [ -f "$out/obj/cgen-c-macos-x64.c" ]; then
 		run_cgen c-macos-x64-O0 "-arch x86_64 -O0" "$out/obj/cgen-c-macos-x64.c"
 		run_cgen c-macos-x64-O2 "-arch x86_64 -O2" "$out/obj/cgen-c-macos-x64.c"

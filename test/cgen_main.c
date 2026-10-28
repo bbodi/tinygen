@@ -320,6 +320,19 @@ static void check_long_double(void) {
 }
 #endif
 
+// Step 6: debug names and types
+struct DbgPoint { int32_t x, y; };
+int64_t dbg_scalars(int64_t a, int32_t b); int64_t dbg_point(struct DbgPoint pt); int64_t dbg_node(int64_t x);
+
+static void check_debug(void) {
+	struct DbgPoint pt = {40, -2};
+	EQ(dbg_scalars(10, 3), 10 + 3 + 6 + 7 + 200 + 3 + 1 - 3 + 100);
+	EQ(dbg_scalars(-50, -4), -50 - 4 - 8 + 7 + 200 + 3 + 1 - 3 + 100);
+	EQ(dbg_point(pt), 42);
+	EQ(dbg_node(10), 10 + 1 + 2 + 3 * 10 + 6 + 2 + 5 + 3 + 0xab + 20 + 1000);
+	EQ(dbg_node(-7), -7 + 1 + 2 - 3 * 7 + 6 + 2 + 5 + 3 + 0xab - 14 + 1000);
+}
+
 int main(void) {
 	check_data();
 	check_ops();
@@ -328,6 +341,7 @@ int main(void) {
 	check_calls();
 	check_atomics();
 	check_intrinsics();
+	check_debug();
 #ifdef HAVE_LD
 	check_long_double();
 #endif

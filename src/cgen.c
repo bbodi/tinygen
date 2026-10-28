@@ -259,7 +259,7 @@ static char const *const tg_c_reserved[] = {
 	"restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
 	"union", "unsigned", "void", "volatile", "while", "asm", "typeof", "alignas", "alignof",
 	"bool", "true", "false", "nullptr", "static_assert", "thread_local", "constexpr",
-	"offsetof", "va_start", "va_arg", "va_end", "va_copy",
+	"offsetof", "va_start", "va_arg", "va_end", "va_copy", "va_list", "unix", "linux", // GNU modes predefine the last two
 	"memcpy", "memmove", "memset", "memcmp", "memchr", "memccpy", "strcpy", "strncpy", "strcat",
 	"strncat", "strcmp", "strncmp", "strcoll", "strxfrm", "strchr", "strrchr", "strspn",
 	"strcspn", "strpbrk", "strstr", "strtok", "strtok_r", "strlen", "strnlen", "strerror",
@@ -319,12 +319,13 @@ TG_INTERNAL bool tg_c_name_ok(tgString name) {
 }
 
 // The symbol's name in the C: its own, or tyg_s<index> with the real name as its asm label.
+// A debug type's typedef or enumerator took a name only no symbol had then.
 TG_INTERNAL tgString tg_c_sym_name(tgModule *m, i32 sym) {
 	if (m->c_names.count < m->symbols.count) tg_array_resize(&m->c_names, m->symbols.count);
 	tgString *name = &m->c_names.data[sym];
 	if (name->len == 0) {
 		*name = m->symbols.data[sym].name;
-		if (!tg_c_name_ok(*name)) {
+		if (!tg_c_name_ok(*name) || tg_strmap_get(&m->c_dnames, *name) != NULL) {
 			char buf[32];
 			snprintf(buf, sizeof(buf), "tyg_s%d", sym);
 			*name = tg_module_string(m, tg_str(buf));
@@ -489,6 +490,306 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 }
 
 ////////////////////////////////////////////////////////////////
+// Debug types
+//
+// The debug types of the named locals become declarations in m->c_dtypes, so that the C
+// compiler's debug info has the source's types. A type has a C form when C lays it out at
+// the debug info's size and member offsets; a pointer to one without a form points to an
+// incomplete struct, or is a void *. A qualifier is printed under a pointer only: the C
+// writes the objects it declares.
+////////////////////////////////////////////////////////////////
+
+enum {
+	tgCDt_Known    = 1,  // flags Form and Enum, size and align are set
+	tgCDt_Form     = 2,  // it has a C form
+	tgCDt_Enum     = 4,  // an enum in the C, with its enumerators
+	tgCDt_Declared = 8,  // its head and what that names are in m->c_dtypes
+	tgCDt_Defined  = 16, // a record: complete in m->c_dtypes
+	tgCDt_Busy     = 32, // being laid out or defined
+};
+
+// See tg_c_debug_names, which sizes m->c_dts.
+TG_INTERNAL tgCDtype *tg_c_dt(tgModule *m, tyg_dtype const *t) {
+	return &m->c_dts.data[t->index];
+}
+
+// The C type of a base type and its alignment, or NULL.
+TG_INTERNAL char const *tg_c_dt_base(tgModule *m, tyg_dtype const *t, i64 *align) {
+	static char const *const ints[2][4] = {{"int8_t", "int16_t", "int32_t", "int64_t"}, {"uint8_t", "uint16_t", "uint32_t", "uint64_t"}};
+	i64 s = t->size;
+	int w = s == 1 ? 0 : s == 2 ? 1 : s == 4 ? 2 : s == 8 ? 3 : -1;
+	*align = s;
+	switch (t->encoding) {
+	case TYG_DT_FLOAT: {
+		tyg_type const *f80 = tyg_type_scalar(m, TYG_F80);
+		if (s == 4 || s == 8) return s == 4 ? "float" : "double";
+		*align = f80->align;
+		return s == f80->size && m->target.os != TYG_OS_WINDOWS ? "TYG_F80" : NULL; // see the prelude
+	}
+	case TYG_DT_SIGNED_CHAR:   if (s == 1) return "signed char"; break;
+	case TYG_DT_UNSIGNED_CHAR: if (s == 1) return "unsigned char"; break;
+	case TYG_DT_BOOL:          if (s == 1) return "_Bool"; break;
+	}
+	return w < 0 ? NULL : ints[t->encoding != TYG_DT_SIGNED && t->encoding != TYG_DT_SIGNED_CHAR][w];
+}
+
+// Lays t out like C does, as tg_c_record checks a record; returns whether it has a C form.
+// A record has one when its members, which are not bitfields, sit where C puts them.
+TG_INTERNAL bool tg_c_dt_form(tgModule *m, tyg_dtype const *t) {
+	if (t == NULL) return false;
+	tgCDtype *c = tg_c_dt(m, t);
+	if (c->flags & (tgCDt_Known | tgCDt_Busy)) return (c->flags & tgCDt_Form) != 0; // Busy: a record holding itself
+	c->flags |= tgCDt_Busy;
+	i64 size = 0, align = 1;
+	bool form = false, is_enum = false;
+	switch (t->kind) {
+	case tgDt_Base: form = tg_c_dt_base(m, t, &align) != NULL; size = t->size; break;
+	case tgDt_Pointer: form = true; size = align = 8; break;
+	case tgDt_Const:
+	case tgDt_Volatile:
+	case tgDt_Typedef:
+	case tgDt_Enum:
+	case tgDt_Array:
+		form = tg_c_dt_form(m, t->target) && (t->kind != tgDt_Array || t->count > 0);
+		if (!form) break;
+		size = tg_c_dt(m, t->target)->size * (t->kind == tgDt_Array ? t->count : 1);
+		align = tg_c_dt(m, t->target)->align;
+		is_enum = t->kind == tgDt_Enum && size == 4 && t->enumerators.count > 0;
+		for (isize i = 0; is_enum && i < t->enumerators.count; i++) is_enum = t->enumerators.data[i].value >= INT32_MIN && t->enumerators.data[i].value <= INT32_MAX;
+		break;
+	case tgDt_Record: {
+		bool is_union = t->record_kind == TYG_DT_UNION;
+		form = t->complete && t->members.count > 0;
+		for (isize i = 0; form && i < t->members.count; i++) {
+			tgDtMember const *f = &t->members.data[i];
+			form = f->bit_size == 0 && tg_c_dt_form(m, f->type);
+			if (!form) break;
+			tgCDtype const *ft = tg_c_dt(m, f->type);
+			form = f->offset == (is_union ? 0 : tg_align_up(size, ft->align));
+			size = is_union ? tg_max(size, ft->size) : f->offset + ft->size;
+			align = tg_max(align, ft->align);
+		}
+		form = form && t->align == align && t->size == tg_align_up(size, align);
+		size = t->size;
+		break;
+	}
+	}
+	c->flags = (u8)((c->flags & ~tgCDt_Busy) | tgCDt_Known | (form ? tgCDt_Form : 0) | (is_enum ? tgCDt_Enum : 0));
+	c->size = size;
+	c->align = align;
+	return form;
+}
+
+// Whether t can be named in the C, as a pointer's target, a typedef's or a function type's
+// part: a type with a C form, void, a record (incomplete without a form) or made of those.
+TG_INTERNAL bool tg_c_dt_spellable(tgModule *m, tyg_dtype const *t) {
+	if (t == NULL) return true; // a function's void result
+	switch (t->kind) {
+	case tgDt_Void:
+	case tgDt_Record:
+	case tgDt_Pointer:
+		return true;
+	case tgDt_Const:
+	case tgDt_Volatile:
+	case tgDt_Typedef:
+		return tg_c_dt_spellable(m, t->target);
+	case tgDt_Array:
+		return tg_c_dt_form(m, t->target);
+	case tgDt_Func:
+		for (i32 i = 0; i < t->param_count; i++) {
+			if (t->params[i]->kind == tgDt_Void || !tg_c_dt_spellable(m, t->params[i])) return false;
+		}
+		return tg_c_dt_spellable(m, t->target);
+	}
+	return tg_c_dt_form(m, t);
+}
+
+// Takes `name` in `names`, m->c_dnames or m->c_dtags, when it is a usable C name that is
+// free there; a file scope name must also not be a symbol's.
+TG_INTERNAL bool tg_c_dt_take(tgModule *m, tgStrMap *names, tgString name) {
+	if (!tg_c_name_ok(name) || tg_strmap_get(names, name) != NULL) return false;
+	if (names == &m->c_dnames && tg_strmap_get(&m->symbol_map, name) != NULL) return false;
+	tg_strmap_set(names, name, 1);
+	return true;
+}
+
+// Sets t's head to `kw` and its source name when it can take that, else tyg_t<index>. kw
+// is "struct ", "union " or "enum " for a tag, "" for a typedef.
+TG_INTERNAL void tg_c_dt_name(tgModule *m, tyg_dtype const *t, char const *kw) {
+	tgBytes s;
+	memset(&s, 0, sizeof(s));
+	if (tg_c_dt_take(m, kw[0] ? &m->c_dtags : &m->c_dnames, t->name)) tg_c_printf(&s, "%s%s", kw, t->name.text);
+	else tg_c_printf(&s, "%styg_t%d", kw, t->index);
+	tg_c_dt(m, t)->head = tg_module_string(m, tg_str_make((char const *)s.data, s.count));
+	tg_array_free(&s);
+}
+
+// Prints `inner`, a declarator, declared as t, which tg_c_dt_declare declared. A qualifier
+// counts only with `qualify`, under a pointer.
+TG_INTERNAL void tg_c_dt_decl(tgModule *m, tgBytes *b, tyg_dtype const *t, char const *inner, bool qualify) {
+	char const *sp = inner[0] ? " " : "";
+	tyg_dtype const *to;
+	tgBytes d;
+	memset(&d, 0, sizeof(d));
+	if (t == NULL) {
+		tg_c_printf(b, "void%s%s", sp, inner);
+		return;
+	}
+	switch (t->kind) {
+	case tgDt_Pointer:
+		if (!tg_c_dt_spellable(m, t->target)) {
+			tg_c_printf(b, "void *%s", inner);
+			return;
+		}
+		for (to = t->target; to->kind == tgDt_Const || to->kind == tgDt_Volatile; to = to->target) {}
+		tg_c_printf(&d, to->kind == tgDt_Array || to->kind == tgDt_Func ? "(*%s)" : "*%s", inner);
+		qualify = true;
+		break;
+	case tgDt_Const:
+	case tgDt_Volatile:
+		if (qualify && t->target->kind != tgDt_Func) tg_c_printf(&d, "%s%s%s", t->kind == tgDt_Const ? "const" : "volatile", sp, inner);
+		else tg_c_puts(&d, inner);
+		break;
+	case tgDt_Array:
+		if (t->count >= 0) tg_c_printf(&d, "%s[%lld]", inner, (long long)t->count);
+		else tg_c_printf(&d, "%s[]", inner);
+		break;
+	case tgDt_Func:
+		tg_c_printf(&d, "%s(", inner);
+		for (i32 i = 0; i < t->param_count; i++) {
+			if (i > 0) tg_c_puts(&d, ", ");
+			tg_c_dt_decl(m, &d, t->params[i], "", false);
+		}
+		if (t->param_count == 0 && !t->variadic) tg_c_puts(&d, "void");
+		else if (t->variadic && t->param_count > 0) tg_c_puts(&d, ", ...");
+		tg_c_puts(&d, ")");
+		qualify = false;
+		break;
+	default:
+		if (tg_c_dt(m, t)->head.len > 0) {
+			tg_c_printf(b, "%s%s%s", tg_c_dt(m, t)->head.text, sp, inner);
+			return;
+		}
+		tg_c_puts(&d, inner); // an enum without its own name: its underlying type
+		break;
+	}
+	tg_array_add(&d, (u8)0);
+	tg_c_dt_decl(m, b, t->target, (char const *)d.data, qualify);
+	tg_array_free(&d);
+}
+
+TG_INTERNAL void tg_c_dt_define(tgModule *m, tyg_dtype const *t);
+
+// Makes t nameable in the C: appends what its spelling names to m->c_dtypes. A record
+// that is not complete there yet is declared.
+TG_INTERNAL void tg_c_dt_declare(tgModule *m, tyg_dtype const *t) {
+	if (t == NULL) return;
+	tgCDtype *c = tg_c_dt(m, t);
+	tgBytes *out = &m->c_dtypes;
+	if (t->kind == tgDt_Record) {
+		if (c->head.len == 0) tg_c_dt_name(m, t, t->record_kind == TYG_DT_UNION ? "union " : "struct ");
+		if (!(c->flags & (tgCDt_Declared | tgCDt_Defined))) tg_c_printf(out, "%s;\n", c->head.text);
+		c->flags |= tgCDt_Declared;
+		return;
+	}
+	if (c->flags & tgCDt_Declared) return;
+	c->flags |= tgCDt_Declared;
+	tg_c_dt_form(m, t);
+	switch (t->kind) {
+	case tgDt_Void: c->head = tg_str_lit("void"); break;
+	case tgDt_Base: {
+		i64 align;
+		char const *ct = tg_c_dt_base(m, t, &align);
+		if (ct == NULL) break;
+		if (tg_c_dt_take(m, &m->c_dnames, t->name)) {
+			c->head = t->name;
+			tg_c_printf(out, "typedef %s %s;\n", ct, t->name.text);
+		} else {
+			c->head = tg_str(ct);
+		}
+		break;
+	}
+	case tgDt_Pointer:
+		if (!tg_c_dt_spellable(m, t->target)) break;
+		tg_c_dt_declare(m, t->target); // a record before its first use, which may be in a prototype
+		tg_c_dt_define(m, t->target);
+		break;
+	case tgDt_Const:
+	case tgDt_Volatile:
+		tg_c_dt_declare(m, t->target);
+		break;
+	case tgDt_Array:
+		tg_c_dt_define(m, t->target);
+		break;
+	case tgDt_Func:
+		tg_c_dt_declare(m, t->target);
+		for (i32 i = 0; i < t->param_count; i++) tg_c_dt_declare(m, t->params[i]);
+		break;
+	case tgDt_Typedef:
+		tg_c_dt_declare(m, t->target);
+		tg_c_dt_name(m, t, "");
+		tg_c_puts(out, "typedef ");
+		tg_c_dt_decl(m, out, t->target, c->head.text, false);
+		tg_c_puts(out, ";\n");
+		break;
+	case tgDt_Enum:
+		if (!(c->flags & tgCDt_Enum)) {
+			// not an int: its underlying type, named when it can be
+			tg_c_dt_declare(m, t->target);
+			if (!tg_c_dt_form(m, t) || !tg_c_dt_take(m, &m->c_dnames, t->name)) break;
+			c->head = t->name;
+			tg_c_puts(out, "typedef ");
+			tg_c_dt_decl(m, out, t->target, c->head.text, false);
+			tg_c_puts(out, ";\n");
+			break;
+		}
+		tg_c_dt_name(m, t, "enum ");
+		tg_c_printf(out, "%s {\n", c->head.text);
+		for (isize i = 0; i < t->enumerators.count; i++) {
+			tgDtEnumerator const *e = &t->enumerators.data[i];
+			if (tg_c_dt_take(m, &m->c_dnames, e->name)) tg_c_printf(out, "\t%s", e->name.text);
+			else tg_c_printf(out, "\ttyg_t%d_%d", t->index, (int)i);
+			tg_c_printf(out, " = %lld,\n", (long long)e->value);
+		}
+		tg_c_puts(out, "};\n");
+		break;
+	}
+}
+
+// Makes t complete in the C, with every type it holds; a record with a C form is defined
+// after the types of its members and their targets.
+TG_INTERNAL void tg_c_dt_define(tgModule *m, tyg_dtype const *t) {
+	if (t == NULL) return;
+	tgCDtype *c = tg_c_dt(m, t);
+	if (t->kind != tgDt_Record || !tg_c_dt_form(m, t)) {
+		tg_c_dt_declare(m, t);
+		if (t->kind == tgDt_Const || t->kind == tgDt_Volatile || t->kind == tgDt_Typedef) tg_c_dt_define(m, t->target);
+		return;
+	}
+	if (c->flags & (tgCDt_Defined | tgCDt_Busy)) return;
+	c->flags |= tgCDt_Busy;
+	if (c->head.len == 0) tg_c_dt_name(m, t, t->record_kind == TYG_DT_UNION ? "union " : "struct ");
+	for (isize i = 0; i < t->members.count; i++) tg_c_dt_define(m, t->members.data[i].type);
+	tgBytes b;
+	memset(&b, 0, sizeof(b));
+	tg_c_printf(&b, "%s {\n", c->head.text);
+	for (isize i = 0; i < t->members.count; i++) {
+		tgDtMember const *f = &t->members.data[i];
+		bool ok = tg_c_name_ok(f->name);
+		for (isize j = 0; ok && j < i; j++) ok = !tg_str_eq(f->name, t->members.data[j].name);
+		char name[32];
+		snprintf(name, sizeof(name), "tyg_m%d", (int)i);
+		tg_c_puts(&b, "\t");
+		tg_c_dt_decl(m, &b, f->type, ok ? f->name.text : name, false);
+		tg_c_puts(&b, ";\n");
+	}
+	tg_c_puts(&b, "};\n");
+	tg_array_add_elems(&m->c_dtypes, b.data, b.count);
+	tg_array_free(&b);
+	c->flags = (u8)((c->flags & ~tgCDt_Busy) | tgCDt_Defined);
+}
+
+////////////////////////////////////////////////////////////////
 // Symbols
 ////////////////////////////////////////////////////////////////
 
@@ -531,15 +832,22 @@ TG_INTERNAL void tg_c_attrs(tgModule *m, tgBytes *b, i32 sym, char const *storag
 	tg_c_puts(b, storage);
 }
 
-// Prints the parameter list of a signature, with `def` named p0, p1, ...
-TG_INTERNAL void tg_c_params(tgModule *m, tgBytes *b, tyg_sig const *sig, bool def) {
+// The C name of the parameter k of the procedure being printed: its source name, or p<k>.
+TG_INTERNAL char const *tg_c_param_name(tgProc *p, i32 k, char buf[16]) {
+	tgString name = p->c_names[p->locals.count + k];
+	if (name.len > 0) return name.text;
+	snprintf(buf, 16, "p%d", (int)k);
+	return buf;
+}
+
+// Prints the parameter list of a signature, with the parameter names of `def`, if given.
+TG_INTERNAL void tg_c_params(tgModule *m, tgBytes *b, tyg_sig const *sig, tgProc *def) {
 	tg_c_puts(b, "(");
 	if (sig == NULL || (sig->count == 0 && !(sig->flags & TYG_SIG_VARIADIC))) tg_c_puts(b, "void");
 	for (i32 i = 0; sig != NULL && i < sig->count; i++) {
-		char name[32] = "";
-		if (def) snprintf(name, sizeof(name), "p%d", i);
+		char buf[16];
 		if (i > 0) tg_c_puts(b, ", ");
-		tg_c_type_decl(m, b, sig->params[i], name);
+		tg_c_type_decl(m, b, sig->params[i], def != NULL ? tg_c_param_name(def, i, buf) : "");
 	}
 	if (sig != NULL && (sig->flags & TYG_SIG_VARIADIC) && sig->count > 0) tg_c_puts(b, ", ...");
 	tg_c_puts(b, ")");
@@ -566,8 +874,8 @@ TG_INTERNAL bool tg_c_sig_equal(tyg_sig const *a, tyg_sig const *b) {
 }
 
 // Prints the prototype of a function symbol, without the semicolon, or with `def` the
-// header of its definition, whose parameters are p0, p1, ...
-TG_INTERNAL void tg_c_proto(tgModule *m, tgBytes *b, i32 sym, bool def) {
+// header of its definition, whose parameters are named.
+TG_INTERNAL void tg_c_proto(tgModule *m, tgBytes *b, i32 sym, tgProc *def) {
 	tgSymbol const *s = &m->symbols.data[sym];
 	tyg_sig const *sig = tg_c_sym_sig(m, sym);
 	if (sig == NULL && s->alias_of != 0) sig = tg_c_sym_sig(m, (i32)(tg_alias_target(m, sym) - m->symbols.data));
@@ -579,7 +887,7 @@ TG_INTERNAL void tg_c_proto(tgModule *m, tgBytes *b, i32 sym, bool def) {
 	memset(&params, 0, sizeof(params));
 	memset(&d, 0, sizeof(d));
 	tg_c_params(m, &params, sig, def);
-	tg_c_sym_declarator(m, &d, sym, (char const *)params.data, !def);
+	tg_c_sym_declarator(m, &d, sym, (char const *)params.data, def == NULL);
 	tg_array_add(&d, (u8)0);
 	tg_c_type_decl(m, b, sig ? sig->ret : tyg_type_scalar(m, TYG_VOID), (char const *)d.data);
 	tg_array_free(&params);
@@ -701,7 +1009,10 @@ TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m) {
 	if (m.offset != 0) snprintf(off, sizeof(off), " %c %lld", m.offset < 0 ? '-' : '+', m.offset < 0 ? -(long long)m.offset : (long long)m.offset);
 	switch (m.kind) {
 	case tgMem_Reg:   tg_c_printf(b, "((char *)(uintptr_t)v%u%s)", m.base, off); return;
-	case tgMem_Local: tg_c_printf(b, "((char *)l%u%s)", m.base, off); return;
+	case tgMem_Local:
+		if (p->c_names[m.base].len > 0) tg_c_printf(b, "((char *)&%s%s)", p->c_names[m.base].text, off);
+		else tg_c_printf(b, "((char *)l%u%s)", m.base, off);
+		return;
 	case tgMem_Sym:
 		// ISO C converts a function pointer to an integer, not to a data pointer
 		tg_c_printf(b, tg_c_is_func(p->m, (i32)m.base) ? "((char *)(uintptr_t)&%s%s)" : "((char *)&%s%s)", tg_c_sym_name(p->m, (i32)m.base).text, off);
@@ -756,7 +1067,7 @@ TG_INTERNAL void tg_c_call_expr(tgProc *p, tgBytes *b, tgCall const *call) {
 		tgBytes d;
 		memset(&d, 0, sizeof(d));
 		tg_c_puts(&d, "(*)");
-		tg_c_params(m, &d, sig, false);
+		tg_c_params(m, &d, sig, NULL);
 		tg_c_puts(b, "((");
 		tg_c_type_decl(m, b, rt, (char const *)d.data);
 		if (call->target_sym >= 0) tg_c_printf(b, ")(uintptr_t)&%s)", tg_c_sym_name(m, call->target_sym).text);
@@ -926,9 +1237,11 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	switch (in->op) {
 	case tgOp_Param: {
 		tyg_type const *pt = p->sig->params[in->imm];
-		if (tg_t_scalar(pt) == tgType_None) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)&p%d;", d, (int)in->imm);
-		else if (pt->kind == tgT_Ptr) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)p%d;", d, (int)in->imm);
-		else tg_c_printf(b, "v%u = (%s)p%d;", d, T, (int)in->imm);
+		char buf[16];
+		char const *name = tg_c_param_name(p, (i32)in->imm, buf);
+		if (tg_t_scalar(pt) == tgType_None) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)&%s;", d, name);
+		else if (pt->kind == tgT_Ptr) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)%s;", d, name);
+		else tg_c_printf(b, "v%u = (%s)%s;", d, T, name);
 		break;
 	}
 	case tgOp_IConst: {
@@ -1055,7 +1368,11 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		if (p->calls.data[in->imm].c == NULL) tg_c_unsupported(p, in->op);
 		else tg_c_call(p, b, &p->calls.data[in->imm]);
 		break;
-	case tgOp_VaStart: tg_c_printf(b, "va_start(*(va_list *)(uintptr_t)v%u, p%d);", a, p->sig->count - 1); break;
+	case tgOp_VaStart: {
+		char buf[16];
+		tg_c_printf(b, "va_start(*(va_list *)(uintptr_t)v%u, %s);", a, tg_c_param_name(p, p->sig->count - 1, buf));
+		break;
+	}
 	case tgOp_VaCopy:  tg_c_printf(b, "va_copy(*(va_list *)(uintptr_t)v%u, *(va_list *)(uintptr_t)v%u);", a, in->b); break;
 	case tgOp_VaArg: {
 		// fetched as the type the C default argument promotions give it
@@ -1130,20 +1447,114 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	tg_c_puts(b, "\n");
 }
 
+// A name for a variable of the procedure being printed: `name`, or with `suffix` the first
+// of name_1, name_2, ... that is a usable C name, free in the procedure and at file scope.
+// Empty when there is none.
+TG_INTERNAL tgString tg_c_var_name(tgProc *p, tgString name, bool suffix) {
+	tgModule *m = p->m;
+	tgString out = {0};
+	tgBytes s;
+	memset(&s, 0, sizeof(s));
+	for (int k = 0; k < (suffix ? 100 : 1) && out.len == 0; k++) {
+		tg_array_clear(&s);
+		tg_c_printf(&s, k == 0 ? "%.*s" : "%.*s_%d", (int)name.len, name.text, k);
+		tgString try_name = tg_str_make((char const *)s.data, s.count);
+		bool ok = tg_c_name_ok(try_name) && tg_strmap_get(&m->c_dnames, try_name) == NULL && tg_strmap_get(&m->symbol_map, try_name) == NULL;
+		for (isize i = 0; ok && i < p->locals.count + p->sig->count; i++) ok = !tg_str_eq(p->c_names[i], try_name);
+		if (ok) out = tg_module_string(m, try_name);
+	}
+	tg_array_free(&s);
+	return out;
+}
+
+// The debug variable that names a local alone: not through a pointer, nor with others.
+TG_INTERNAL tgDebugVar const *tg_c_local_var(tgProc *p, i32 local) {
+	tgDebugVar const *found = NULL;
+	for (isize i = 0; i < p->debug_vars.count; i++) {
+		tgDebugVar const *v = &p->debug_vars.data[i];
+		if (v->local != local) continue;
+		if (found != NULL || v->by_ref) return NULL;
+		found = v;
+	}
+	return found;
+}
+
+TG_INTERNAL tyg_dtype const *tg_c_local_dtype(tgProc *p, i32 local) {
+	return tg_c_local_var(p, local)->type;
+}
+
+// The scalar parameter the entry block stores whole to the local, or -1.
+TG_INTERNAL i32 tg_c_param_stored(tgProc *p, i32 local) {
+	tgBlock const *entry = p->blocks.data[0];
+	for (isize i = 0; i < entry->instrs.count; i++) {
+		tgInstr const *in = &entry->instrs.data[i];
+		if (in->op != tgOp_Store || in->mem.kind != tgMem_Local || in->mem.base != (u32)local || in->mem.offset != 0) continue;
+		for (isize k = 0; k < p->param_vals.count; k++) {
+			if (p->param_vals.data[k] == in->a && tg_t_scalar(p->sig->params[k]) != tgType_None) return (i32)k;
+		}
+	}
+	return -1;
+}
+
+// Sets p->c_names from the debug variables, in their order, and declares the debug types
+// of the named locals. A local takes the name of the one variable that covers it, when its
+// type has a C form of the local's size and an alignment the local has; an aggregate
+// parameter takes its own; a scalar parameter takes the name of the variable whose local
+// it is stored to, and that local gets the name with a suffix.
+TG_INTERNAL void tg_c_debug_names(tgProc *p) {
+	tgModule *m = p->m;
+	isize locals = p->locals.count;
+	p->c_names = tg_alloc_items(tgString, locals + p->sig->count + 1);
+	if (p->debug_vars.count == 0) return;
+	if (m->c_dts.count < m->dtypes.count) tg_array_resize(&m->c_dts, m->dtypes.count);
+	for (isize i = 0; i < p->debug_vars.count; i++) {
+		tgDebugVar const *v = &p->debug_vars.data[i];
+		if (v->c_param > 0 && p->c_names[locals + v->c_param - 1].len == 0) {
+			p->c_names[locals + v->c_param - 1] = tg_c_var_name(p, v->name, true);
+			continue;
+		}
+		if (v->local < 0 || v->by_ref || v->offset != 0 || v->type == NULL) continue;
+		// the parameter takes the name first, so a backtrace shows it; its local gets name_1
+		i32 k = v->is_param ? tg_c_param_stored(p, v->local) : -1;
+		if (k >= 0 && p->c_names[locals + k].len == 0) p->c_names[locals + k] = tg_c_var_name(p, v->name, false);
+		tgLocal const *l = &p->locals.data[v->local];
+		if (tg_c_local_var(p, v->local) == v && tg_c_dt_form(m, v->type) && tg_c_dt(m, v->type)->size == l->size &&
+		    tg_c_dt(m, v->type)->align <= tg_max(l->over_align ? l->over_align : l->align, (i64)1)) {
+			tg_c_dt_define(m, v->type); // first: its typedefs take names a variable then avoids
+			p->c_names[v->local] = tg_c_var_name(p, v->name, true);
+		}
+	}
+}
+
 // Prints the procedure being ended into m->c_procs, or on failure sets p->fail_reason and
 // leaves m->c_procs as it was. The symbol counts as defined, for the definition's storage.
 TG_INTERNAL bool tg_c_proc(tgProc *p) {
 	tgModule *m = p->m;
 	tgBytes b;
 	memset(&b, 0, sizeof(b));
-	tg_c_proto(m, &b, p->sym, true);
+	tg_c_debug_names(p);
+	tg_c_proto(m, &b, p->sym, p);
 	tg_c_puts(&b, " {\n");
 	// what changes between a setjmp and its longjmp is lost unless volatile
 	char const *vol = p->c_returns_twice ? "volatile " : "";
 	for (isize i = 0; i < p->locals.count; i++) {
 		tgLocal const *l = &p->locals.data[i];
-		i64 align = l->over_align ? l->over_align : l->align;
-		tg_c_printf(&b, "\tTYG_ALIGNED(%lld) %sunsigned char l%d[%lld];\n", (long long)tg_max(align, (i64)1), vol, (int)i, (long long)tg_max(l->size, (i64)1));
+		i64 align = tg_max(l->over_align ? l->over_align : l->align, (i64)1);
+		tyg_dtype const *t = p->c_names[i].len > 0 ? tg_c_local_dtype(p, (i32)i) : NULL;
+		if (t == NULL) {
+			tg_c_printf(&b, "\tTYG_ALIGNED(%lld) %sunsigned char l%d[%lld];\n", (long long)align, vol, (int)i, (long long)tg_max(l->size, (i64)1));
+			continue;
+		}
+		// a named local: its debug type, at least as aligned as the local
+		tgBytes d;
+		memset(&d, 0, sizeof(d));
+		tg_c_printf(&d, "%s%s", vol, p->c_names[i].text);
+		tg_array_add(&d, (u8)0);
+		tg_c_puts(&b, "\t");
+		if (align > tg_c_dt(m, t)->align) tg_c_printf(&b, "TYG_ALIGNED(%lld) ", (long long)align);
+		tg_c_dt_decl(m, &b, t, (char const *)d.data, false);
+		tg_c_puts(&b, ";\n");
+		tg_array_free(&d);
 	}
 	for (isize v = 1; v < p->vregs.count; v++) {
 		tgType t = p->vregs.data[v];
@@ -1199,7 +1610,7 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 		tgSymbol const *s = &m->symbols.data[i];
 		i32 data = s->alias_of != 0 ? (i32)(tg_alias_target(m, i) - m->symbols.data) : i;
 		if (tg_c_is_func(m, data)) {
-			tg_c_proto(m, &decls, i, false);
+			tg_c_proto(m, &decls, i, NULL);
 		} else {
 			tg_c_data_decl(m, &decls, i, data, false);
 		}
@@ -1235,6 +1646,8 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 			tg_c_puts(out, tg_c_ld_prelude);
 		}
 		tg_array_add_elems(out, m->c_types.data, m->c_types.count);
+		if (m->c_dtypes.count > 0) tg_c_puts(out, "/* the debug types */\n");
+		tg_array_add_elems(out, m->c_dtypes.data, m->c_dtypes.count);
 		if (structs.count > 0) {
 			tg_c_puts(out, "#pragma pack(push, 1)\n");
 			tg_array_add_elems(out, structs.data, structs.count);

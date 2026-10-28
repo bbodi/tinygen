@@ -1264,7 +1264,13 @@ TG_INTERNAL void tg_add_debug_var(tgProc *p, char const *name, tyg_dtype const *
 			break;
 		}
 		if (!tg_val_addr_mem(p, (u32)where.base, &m)) {
-			if (tg_is_c_output()) return; // an aggregate parameter, a pointer in C mode: no debug variables yet
+			// in C mode an aggregate parameter is the C parameter itself, which its tgOp_Param
+			// points at; any other pointer names nothing
+			for (isize k = 0; tg_is_c_output() && where.offset == 0 && k < p->param_vals.count; k++) {
+				if (p->param_vals.data[k] == (u32)where.base && tg_t_scalar(p->sig->params[k]) == tgType_None) v.c_param = (i32)k + 1;
+			}
+			if (v.c_param != 0) break;
+			if (tg_is_c_output()) return;
 			tg_fail(p, "debug variable: the address is not a local's or a symbol's");
 			return;
 		}

@@ -627,6 +627,141 @@ static void build_long_double(void) {
 	check(tyg_proc_end(p));
 }
 
+// Step 6: debug names and types. Locals and parameters with tyg_debug_var/param become C
+// variables of the debug types; the results show that the renaming changes nothing.
+
+// A local of `size` bytes with a debug variable of type t on it.
+static tyg_local dvar(tyg_proc *p, const char *name, const tyg_dtype *t, int64_t size, int64_t align) {
+	tyg_local l = tyg_local_new(p, size, align);
+	tyg_debug_var(p, name, t, tyg_at_local(l, 0), file, 60);
+	return l;
+}
+
+static tyg_val ld64(tyg_proc *p, tyg_local l, int64_t off) { return tyg_load(p, TYG_I64, tyg_at_local(l, off), 0); }
+static tyg_val add(tyg_proc *p, tyg_val a, tyg_val b) { return tyg_bin(p, TYG_ADD, a, b); }
+
+// long long dbg_scalars(long long a, int b): `a` a named local, `b` stored to an 8 byte
+// local its 4 byte type does not fill, so the C parameter takes the name; locals named
+// total, int (a keyword), v1 (a value's name), and total again in a nested scope.
+// returns a + b + 2b + 7 + 200 + (long long)(1.5 * 2) + 1 - 3 + 100
+// struct Point { int x, y; } by value: long long dbg_point(struct Point pt) { return pt.x - pt.y; }
+// long long dbg_node(long long x): a struct Node with a nested record, an array, an enum
+// and a pointer to another Node; a typedef'd local; a bitfield and a packed record, which
+// stay byte arrays; a struct Extra of the other kinds of types. Returns
+// x + 1 + 2 + 3(x + 2) + 2 + 5 + 3 + 0xab + 2x + 1000.
+static void build_debug(void) {
+	const tyg_dtype *ll = tyg_dt_base(m, "long long", 8, TYG_DT_SIGNED), *in = tyg_dt_base(m, "int", 4, TYG_DT_SIGNED);
+	const tyg_dtype *uc = tyg_dt_base(m, "unsigned char", 1, TYG_DT_UNSIGNED_CHAR), *dbl = tyg_dt_base(m, "double", 8, TYG_DT_FLOAT);
+	const tyg_dtype *bl = tyg_dt_base(m, "bool", 1, TYG_DT_BOOL), *i16 = tyg_dt_base(m, "i16", 2, TYG_DT_SIGNED);
+	const tyg_dtype *ui = tyg_dt_base(m, "unsigned int", 4, TYG_DT_UNSIGNED);
+	tyg_proc *p = begin("dbg_scalars", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), ty(TYG_I32), NULL, 0));
+	tyg_local la = tyg_local_new(p, 8, 8), lb = tyg_local_new(p, 8, 8);
+	tyg_store(p, TYG_I64, tyg_at_local(la, 0), tyg_param(p, 0), 0);
+	tyg_store(p, TYG_I32, tyg_at_local(lb, 0), tyg_param(p, 1), 0);
+	tyg_debug_param(p, "a", ll, tyg_at_local(la, 0), file, 50);
+	tyg_debug_param(p, "b", in, tyg_at_local(lb, 0), file, 50);
+	tyg_val b = tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(lb, 0), 0));
+	tyg_local total = dvar(p, "total", ll, 8, 8), kw = dvar(p, "int", in, 4, 4), v1 = dvar(p, "v1", ll, 8, 8);
+	tyg_local u = dvar(p, "byte", uc, 1, 1), d = dvar(p, "ratio", dbl, 8, 8), f = dvar(p, "flag", bl, 1, 1), s = dvar(p, "small", i16, 2, 2);
+	tyg_store(p, TYG_I64, tyg_at_local(total, 0), add(p, ld64(p, la, 0), b), 0);
+	tyg_store(p, TYG_I32, tyg_at_local(kw, 0), tyg_bin(p, TYG_MUL, tyg_load(p, TYG_I32, tyg_at_local(lb, 0), 0), k32(p, 2)), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(v1, 0), k64(p, 7), 0);
+	tyg_store(p, TYG_I8, tyg_at_local(u, 0), tyg_iconst(p, TYG_I8, 200), 0);
+	tyg_store(p, TYG_F64, tyg_at_local(d, 0), tyg_fconst(p, TYG_F64, 1.5), 0);
+	tyg_store(p, TYG_I8, tyg_at_local(f, 0), tyg_iconst(p, TYG_I8, 1), 0);
+	tyg_store(p, TYG_I16, tyg_at_local(s, 0), tyg_iconst(p, TYG_I16, -3), 0);
+	tyg_val r = add(p, ld64(p, total, 0), tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(kw, 0), 0)));
+	r = add(p, r, ld64(p, v1, 0));
+	r = add(p, r, tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_load(p, TYG_I8, tyg_at_local(u, 0), 0)));
+	tyg_val two = tyg_fconst(p, TYG_F64, 2.0);
+	r = add(p, r, tyg_convert(p, TYG_FTOSI, TYG_I64, tyg_bin(p, TYG_FMUL, tyg_load(p, TYG_F64, tyg_at_local(d, 0), 0), two)));
+	r = add(p, r, tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_load(p, TYG_I8, tyg_at_local(f, 0), 0)));
+	r = add(p, r, tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I16, tyg_at_local(s, 0), 0)));
+	tyg_scope_begin(p);
+	tyg_local inner = dvar(p, "total", ll, 8, 8);
+	tyg_store(p, TYG_I64, tyg_at_local(inner, 0), k64(p, 100), 0);
+	r = add(p, r, ld64(p, inner, 0));
+	tyg_scope_end(p);
+	tyg_ret(p, r);
+	check(tyg_proc_end(p));
+
+	tyg_dtype *point = tyg_dt_record(m, TYG_DT_STRUCT, "Point", file, 40);
+	tyg_dt_member(m, point, "x", in, 0);
+	tyg_dt_member(m, point, "y", in, 4);
+	tyg_dt_record_complete(m, point, 8, 4);
+	tyg_field pf[2] = {{NULL, 0}, {NULL, 4}};
+	pf[0].type = pf[1].type = ty(TYG_I32);
+	p = begin("dbg_point", TYG_SYM_GLOBAL, sig(ty(TYG_I64), tyg_type_record(m, 8, 4, pf, 2), NULL, NULL, 0));
+	tyg_val pt = tyg_param(p, 0);
+	tyg_debug_param(p, "pt", point, tyg_at_val(pt, 0), file, 41);
+	tyg_val dx = tyg_bin(p, TYG_SUB, tyg_load(p, TYG_I32, tyg_at_val(pt, 0), 0), tyg_load(p, TYG_I32, tyg_at_val(pt, 4), 0));
+	tyg_ret(p, tyg_convert(p, TYG_SEXT, TYG_I64, dx));
+	check(tyg_proc_end(p));
+
+	tyg_dtype *color = tyg_dt_enum(m, "Color", ui, file, 42);
+	tyg_dt_enumerator(m, color, "red", 0);
+	tyg_dt_enumerator(m, color, "green", 1);
+	tyg_dt_enumerator(m, color, "blue", 2);
+	tyg_dtype *node = tyg_dt_record(m, TYG_DT_STRUCT, "Node", file, 43);
+	tyg_dt_member(m, node, "value", ll, 0);
+	tyg_dt_member(m, node, "pos", point, 8);
+	tyg_dt_member(m, node, "arr", tyg_dt_array(m, in, 3), 16);
+	tyg_dt_member(m, node, "color", color, 28);
+	tyg_dt_member(m, node, "next", tyg_dt_pointer(m, node), 32);
+	tyg_dt_record_complete(m, node, 40, 8);
+	tyg_dtype *bits = tyg_dt_record(m, TYG_DT_STRUCT, "Bits", file, 44);
+	tyg_dt_bitfield(m, bits, "lo", ui, 0, 3);
+	tyg_dt_bitfield(m, bits, "hi", ui, 3, 5);
+	tyg_dt_record_complete(m, bits, 4, 4);
+	tyg_dtype *packed = tyg_dt_record(m, TYG_DT_STRUCT, "Packed", file, 45);
+	tyg_dt_member(m, packed, "tag", uc, 0);
+	tyg_dt_member(m, packed, "value", ll, 1);
+	tyg_dt_record_complete(m, packed, 9, 1);
+	const tyg_dtype *count = tyg_dt_typedef(m, "Count", ll, file, 46);
+	// struct Extra { union Num { int i; float f; } num; Small small; long long (*fn)(long long);
+	// const char *name; NodeP link; struct Bits *bits; int int; }, Small a 1 byte enum
+	tyg_dtype *num = tyg_dt_record(m, TYG_DT_UNION, "Num", file, 47), *small = tyg_dt_enum(m, "Small", uc, file, 47);
+	tyg_dt_member(m, num, "i", in, 0);
+	tyg_dt_member(m, num, "f", tyg_dt_base(m, "float", 4, TYG_DT_FLOAT), 0);
+	tyg_dt_record_complete(m, num, 4, 4);
+	tyg_dt_enumerator(m, small, "tiny", 1);
+	tyg_dtype *extra = tyg_dt_record(m, TYG_DT_STRUCT, "Extra", file, 47);
+	tyg_dt_member(m, extra, "num", num, 0);
+	tyg_dt_member(m, extra, "small", small, 4);
+	tyg_dt_member(m, extra, "fn", tyg_dt_pointer(m, tyg_dt_func(m, ll, &ll, 1, 0)), 8);
+	tyg_dt_member(m, extra, "name", tyg_dt_pointer(m, tyg_dt_const(m, tyg_dt_base(m, "char", 1, TYG_DT_SIGNED_CHAR))), 16);
+	tyg_dt_member(m, extra, "link", tyg_dt_typedef(m, "NodeP", tyg_dt_pointer(m, node), file, 47), 24);
+	tyg_dt_member(m, extra, "bits", tyg_dt_pointer(m, bits), 32);
+	tyg_dt_member(m, extra, "int", in, 40);
+	tyg_dt_record_complete(m, extra, 48, 8);
+
+	p = begin("dbg_node", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
+	tyg_val x = tyg_param(p, 0);
+	tyg_local n = dvar(p, "node", node, 40, 8), nx = dvar(p, "other", node, 40, 8), c = dvar(p, "count", count, 8, 8);
+	tyg_local bf = dvar(p, "bits", bits, 4, 4), pk = dvar(p, "pk", packed, 9, 1), ex = dvar(p, "extra", extra, 48, 8);
+	tyg_store(p, TYG_I32, tyg_at_local(ex, 0), k32(p, 1000), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(n, 0), x, 0);
+	tyg_store(p, TYG_I32, tyg_at_local(n, 8), k32(p, 1), 0);
+	tyg_store(p, TYG_I32, tyg_at_local(n, 12), k32(p, 2), 0);
+	for (int i = 0; i < 3; i++) tyg_store(p, TYG_I32, tyg_at_local(n, 16 + 4 * i), tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_TRUNC, TYG_I32, x), k32(p, 1 + i)), 0);
+	tyg_store(p, TYG_I32, tyg_at_local(n, 28), k32(p, 2), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(n, 32), tyg_addr_of(p, tyg_at_local(nx, 0)), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(nx, 0), k64(p, 5), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(c, 0), k64(p, 3), 0);
+	tyg_store(p, TYG_I32, tyg_at_local(bf, 0), k32(p, 0xab), 0);
+	tyg_store(p, TYG_I8, tyg_at_local(pk, 0), tyg_iconst(p, TYG_I8, 1), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(pk, 1), tyg_bin(p, TYG_MUL, x, k64(p, 2)), 0);
+	r = ld64(p, n, 0);
+	for (int off = 8; off < 32; off += 4) r = add(p, r, tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(n, off), 0)));
+	r = add(p, r, tyg_load(p, TYG_I64, tyg_at_val(ld64(p, n, 32), 0), 0));
+	r = add(p, r, ld64(p, c, 0));
+	r = add(p, r, tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(bf, 0), 0)));
+	r = add(p, r, ld64(p, pk, 1));
+	r = add(p, r, tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(ex, 0), 0)));
+	tyg_ret(p, r);
+	check(tyg_proc_end(p));
+}
+
 int main(int argc, char **argv) {
 	char const *out = argc > 1 ? argv[1] : "cgen-c.c";
 	char const *target = argc > 2 ? argv[2] : "c";
@@ -666,6 +801,7 @@ int main(int argc, char **argv) {
 	build_atomics();
 	build_intrinsics(t.output == TYG_OUTPUT_C);
 	build_alloca();
+	build_debug();
 	// arm64 Linux has no native long double yet; cgen_main.c checks none there
 	if (!(t.arch == TYG_ARCH_ARM64 && t.os == TYG_OS_LINUX && t.output == TYG_OUTPUT_OBJECT)) build_long_double();
 	check(tyg_module_write(m, out));

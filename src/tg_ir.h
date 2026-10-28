@@ -553,6 +553,7 @@ typedef struct tgDebugVar {
 	u8                dwarf_reg;
 	i32               scope;      // lexical scope, 0 is the procedure
 	i32               offset;     // within the local or the symbol
+	i32               c_param;    // C output: 1 + the index of the aggregate parameter it names, else 0
 } tgDebugVar;
 
 TG_ARRAY(tgDebugVarArray, tgDebugVar);
@@ -679,6 +680,7 @@ struct tyg_proc {
 	bool               c_returns_twice; // C output: it calls setjmp, so its variables are volatile
 	tgTypePtrArray    c_va_types;      // C output: the type of each tgOp_VaArg
 	u8                c_uses;          // C output: the tgCUse parts of the prelude its text uses
+	tgString *        c_names;         // C output, while printing: per local, then per parameter, its source name or empty
 
 	i32                file_id;
 	i32                last_line;
@@ -873,6 +875,16 @@ struct tyg_dtype {
 
 TG_ARRAY(tgDtypePtrArray, tyg_dtype *);
 
+// C output: what cgen.c knows of a debug type, by its index.
+typedef struct tgCDtype {
+	tgString head;  // its C spelling once declared: a type name, `struct tag`, or empty to spell its target
+	i64      size;  // of its C form
+	i64      align;
+	u8       flags; // tgCDt_*
+} tgCDtype;
+
+TG_ARRAY(tgCDtypeArray, tgCDtype);
+
 // A data section the front end names, see tyg_data_named. Its tgSection is
 // tgSection_COUNT + its index.
 typedef struct tgNamedSection {
@@ -929,6 +941,10 @@ struct tyg_module {
 	tgBytes            c_types;    // the definitions of those structs, in dependency order
 	tgBytes            c_procs;    // the procedures' C text
 	u8                 c_uses;     // the tgCUse parts of the prelude the procedures use
+	tgCDtypeArray      c_dts;      // per debug type, see tgCDtype
+	tgBytes            c_dtypes;   // the declarations of the debug types the procedures use, in dependency order
+	tgStrMap           c_dnames;   // the file scope names those declarations take: typedefs, enumerators
+	tgStrMap           c_dtags;    // and their struct, union and enum tags
 
 	tgBytes            output;    // the object, after tg_module_emit
 	char                error[512];
