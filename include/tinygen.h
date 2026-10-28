@@ -37,12 +37,17 @@ extern "C" {
 
 typedef enum tyg_arch { TYG_ARCH_X64, TYG_ARCH_ARM64 } tyg_arch;
 typedef enum tyg_os   { TYG_OS_LINUX, TYG_OS_DARWIN, TYG_OS_WINDOWS } tyg_os;
+typedef enum tyg_output { TYG_OUTPUT_OBJECT = 0, TYG_OUTPUT_C } tyg_output;
 
 typedef struct tyg_target {
 	tyg_arch arch;
 	tyg_os   os;
 	int      pic;        /* position independent code: data of foreign symbols through the GOT */
 	int      debug_info; /* a tyg_debug_format: none, DWARF, or CodeView on Windows */
+	/* a tyg_output. With TYG_OUTPUT_C, tyg_module_write writes a C99 source file for the
+	 * target's arch and os, to be compiled by any C compiler for that platform, and
+	 * tyg_module_emit returns the text. */
+	int      output;
 } tyg_target;
 
 /* tyg_target.debug_info. DEFAULT is the platform's format: DWARF, CodeView on Windows for
@@ -77,9 +82,12 @@ enum {
 };
 void tyg_module_language(tyg_module *m, unsigned dwarf_language);
 
-/* Writes the object file. Returns 0 on success. */
+/* Writes the object file, or the C source with TYG_OUTPUT_C. Returns 0 on success.
+ * The C output does not have procedures yet: tyg_proc_begin fails. Named sections,
+ * aliases, common, weak and the visibilities become attributes of the C compiler,
+ * which decides whether the platform has them. */
 int tyg_module_write(tyg_module *m, const char *path);
-/* The object file in memory, valid until tyg_module_free. */
+/* The object file (or C source) in memory, valid until tyg_module_free. */
 int tyg_module_emit(tyg_module *m, const uint8_t **bytes, size_t *size);
 
 /* The last error, or NULL. Every failing call sets it. */
@@ -128,8 +136,8 @@ int tyg_data(tyg_module *m, tyg_sym sym, tyg_section section,
 int tyg_data_reloc(tyg_module *m, tyg_sym sym, int64_t offset, int size,
                    tyg_sym target, int64_t addend);
 
-/* Named sections, aliases and common symbols work on Linux (ELF) only so far;
- * on the other targets these calls fail.
+/* Named sections, aliases and common symbols work on Linux (ELF) and with C output
+ * only so far; on the other targets these calls fail.
  *
  * Flags of a named section. It is always allocated (loaded). */
 enum {

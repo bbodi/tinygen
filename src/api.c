@@ -33,6 +33,7 @@ tyg_module *tyg_module_new(tyg_target target, const char *source_name) {
 		// Windows on arm64 has no ABI or object writer yet
 		return NULL;
 	}
+	if (target.output != TYG_OUTPUT_OBJECT && target.output != TYG_OUTPUT_C) return NULL;
 	tgModule *m = (tgModule *)calloc(1, sizeof(tgModule));
 	if (m == NULL) return NULL;
 	m->target = target;
@@ -70,6 +71,11 @@ void tyg_module_free(tyg_module *m) {
 		tg_array_free(&m->dtypes.data[i]->enumerators);
 	}
 	tg_array_free(&m->dtypes);
+	tg_array_free(&m->c_sigs);
+	tg_array_free(&m->c_names);
+	tg_map_free(&m->c_type_ids);
+	tg_array_free(&m->c_types);
+	tg_array_free(&m->c_procs);
 	tg_array_free(&m->output);
 	if (tg_arena_cur == &m->proc_arena) tg_arena_cur = NULL;
 	tg_arena_free(&m->proc_arena);
@@ -99,7 +105,8 @@ int tyg_module_emit(tyg_module *m, const uint8_t **bytes, size_t *size) {
 	tg_cur_target = m->target;
 	tg_array_clear(&m->output);
 	if (!tg_resolve_aliases(m)) return 1;
-	bool ok = m->target.os == TYG_OS_DARWIN  ? tg_write_macho(m, &m->output) :
+	bool ok = m->target.output == TYG_OUTPUT_C ? tg_write_c(m, &m->output)     :
+	          m->target.os == TYG_OS_DARWIN  ? tg_write_macho(m, &m->output) :
 	          m->target.os == TYG_OS_WINDOWS ? tg_write_coff(m, &m->output)  :
 	                                           tg_write_elf(m, &m->output);
 	if (!ok) {
@@ -225,14 +232,18 @@ int tyg_data_reloc(tyg_module *m, tyg_sym sym, int64_t offset, int size, tyg_sym
 		tg_set_error(m, "tyg_data_reloc: a 4 byte address is not supported on macOS");
 		return 1;
 	}
+	if (size == 4 && m->target.output == TYG_OUTPUT_C) {
+		tg_set_error(m, "tyg_data_reloc: C output: a 4 byte address is not supported");
+		return 1;
+	}
 	tg_data_reloc(m, sym, offset, size, target, addend);
 	return 0;
 }
 
 // A symbol tyg_data_named, tyg_alias or tyg_common may define. Only the ELF writer
-// supports them so far.
+// supports them so far; for C output the C compiler decides.
 TG_INTERNAL bool tg_check_definable(tyg_module *m, tyg_sym sym, char const *what) {
-	if (m->target.os != TYG_OS_LINUX) {
+	if (m->target.os != TYG_OS_LINUX && m->target.output != TYG_OUTPUT_C) {
 		tg_set_error(m, "%s: not supported on this target yet", what);
 		return false;
 	}

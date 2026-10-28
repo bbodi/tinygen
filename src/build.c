@@ -223,6 +223,10 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 		tg_set_error(m, "tyg_proc_begin: invalid symbol or signature");
 		return NULL;
 	}
+	if (m->target.output == TYG_OUTPUT_C) {
+		tg_set_error(m, "C output: procedures are not supported yet");
+		return NULL;
+	}
 
 	tg_arena_cur = &m->proc_arena;
 	tg_arena_reset(&m->proc_arena);

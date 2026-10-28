@@ -15,6 +15,7 @@
 #include "a64_lower.c"
 #include "x64_win64.c"
 #include "module.c"
+#include "cgen.c"
 #include "dwarf.c"
 #include "elf.c"
 #include "macho.c"

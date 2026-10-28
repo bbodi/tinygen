@@ -34,6 +34,7 @@ TG_INTERNAL bool tg_is_windows(void) { return tg_cur_target.os == TYG_OS_WINDOWS
 TG_INTERNAL bool tg_is_win64(void)   { return tg_cur_target.os == TYG_OS_WINDOWS && tg_cur_target.arch == TYG_ARCH_X64; }
 TG_INTERNAL bool tg_is_pic(void)     { return tg_cur_target.pic != 0; }
 TG_INTERNAL bool tg_debug_info(void) { return tg_cur_target.debug_info != 0; }
+TG_INTERNAL bool tg_is_c_output(void) { return tg_cur_target.output == TYG_OUTPUT_C; }
 // on Windows, CodeView unless DWARF was asked for
 TG_INTERNAL bool tg_debug_codeview(void) { return tg_is_windows() && tg_debug_info() && tg_cur_target.debug_info != TYG_DEBUG_DWARF; }
 
@@ -349,6 +350,8 @@ struct tyg_sig {
 	char const *      abi_reason; // why there is no abi
 	bool              abi_done;
 };
+
+TG_ARRAY(tgSigPtrArray, tyg_sig const *);
 
 ////////////////////////////////////////////////////////////////
 // ABI
@@ -712,6 +715,7 @@ typedef struct tgSymbol {
 	u16        flags;
 	i64        offset;
 	i64        size;
+	i64        align;    // of the data, from tg_define_data
 	i64        realign;  // a thread local whose accesses round its address up to this
 	i32        elf_index;
 	i32        alias_of;     // tyg_alias: the target + 1, resolved when the object is written
@@ -899,6 +903,13 @@ struct tyg_module {
 
 	tgProc *           proc;      // the procedure being built, or NULL
 	tgArena            proc_arena;
+
+	// C output (cgen.c)
+	tgSigPtrArray      c_sigs;     // per symbol: the first signature it was defined or called with, or NULL
+	tgStringArray      c_names;    // per symbol: its name in the C, empty until decided
+	tgMap              c_type_ids; // record and array tyg_type -> the N of struct tyg_r<N>
+	tgBytes            c_types;    // the definitions of those structs, in dependency order
+	tgBytes            c_procs;    // the procedures' C text
 
 	tgBytes            output;    // the object, after tg_module_emit
 	char                error[512];

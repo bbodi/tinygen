@@ -206,6 +206,7 @@ TG_INTERNAL i64 tg_define_data(tgModule *m, i32 sym, tgSection section, void con
 	i64 at = tg_section_reserve(m, section, size, align);
 	if (bytes != NULL && size > 0) tg_section_write(m, section, at, bytes, (isize)size);
 	tg_sym_define(m, sym, section, at, size);
+	m->symbols.data[sym].align = align;
 	if (tg_section_is_tls(m, section)) {
 		tg_sym_add_flags(m, sym, tgSymbolFlag_TLS);
 	}
