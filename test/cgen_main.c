@@ -53,6 +53,31 @@ int cc_call_static(int); int cc_call_ind(int); long long cc_two_sigs(long long);
 double cc_vmix(int, ...); double cc_call_vmix(void); struct M cc_mk_mix(long long, double); struct B cc_mk_big(long long);
 long long cc_sum_big(struct B, struct M); long long cc_use_structs(long long); long long cc_sj(long long);
 
+// Step 4: atomics, intrinsics, alloca, long double
+#define WIDTHS X(8) X(16) X(32) X(64)
+#define RMWS(N) R(xchg, N, v) R(add, N, o + v) R(sub, N, o - v) R(and, N, o & v) R(or, N, o | v) R(xor, N, o ^ v) R(nand, N, ~(o & v))
+#define R(op, N, e) uint##N##_t tg_rmw_##op##_##N(uint##N##_t *, uint##N##_t);
+#define X(N) RMWS(N) uint##N##_t tg_cas_##N(uint##N##_t *, uint##N##_t, uint##N##_t, int32_t *); \
+	uint##N##_t tg_bswap_##N(uint##N##_t); uint##N##_t tg_popcount_##N(uint##N##_t); \
+	uint##N##_t tg_ctz_##N(uint##N##_t); uint##N##_t tg_clz_##N(uint##N##_t);
+WIDTHS
+#undef X
+#undef R
+int32_t tg_aload_32(int32_t *); int64_t tg_aload_64(int64_t *); double tg_aload_f64(double *);
+void tg_astore_32(int32_t *, int32_t); void tg_astore_64(int64_t *, int64_t); void tg_astore_f64(double *, double);
+void tg_fence_pair(int64_t *, int64_t, int64_t); float tg_sqrt_f32(float); double tg_sqrt_f64(double);
+void *tg_frame_addr(void); void *tg_ret_addr(void); int64_t tg_alloca_loop(int64_t, int32_t, void **);
+#if !(defined(__aarch64__) && defined(__linux__)) // no native long double on arm64 Linux yet
+#define HAVE_LD 1
+long double tg_ld_add(long double, long double); long double tg_ld_sub(long double, long double);
+long double tg_ld_mul(long double, long double); long double tg_ld_div(long double, long double);
+long double tg_ld_neg(long double); int32_t tg_ld_cmp(long double, long double); long double tg_ld_call(long double);
+long double tg_ld_from_i32(int32_t); long double tg_ld_from_i64(int64_t); long double tg_ld_from_u64(uint64_t);
+long double tg_ld_from_f32(float); long double tg_ld_from_f64(double);
+int32_t tg_ld_to_i32(long double); int64_t tg_ld_to_i64(long double); uint64_t tg_ld_to_u64(long double);
+float tg_ld_to_f32(long double); double tg_ld_to_f64(long double);
+#endif
+
 long long cc_ext(long long a, long long b) { return a * 100 + b; }
 static long long noted;
 void cc_note(long long a) { noted = a; }
@@ -202,12 +227,110 @@ static void check_calls(void) {
 	EQ(cc_sj(-2), -6 + 7 - 1);
 }
 
+// what the lowerings give: the count of a zero is the width
+static unsigned ref_popcount(uint64_t x) { unsigned n = 0; for (; x; x &= x - 1) n++; return n; }
+static unsigned ref_ctz(uint64_t x, unsigned bits) { unsigned n = 0; while (n < bits && !(x >> n & 1)) n++; return n; }
+static unsigned ref_clz(uint64_t x, unsigned bits) { unsigned n = 0; while (n < bits && !(x >> (bits - 1 - n) & 1)) n++; return n; }
+static uint64_t ref_bswap(uint64_t x, unsigned bits) { uint64_t r = 0; for (unsigned i = 0; i < bits; i += 8) r = r << 8 | (x >> i & 0xff); return r; }
+
+static void check_atomics(void) {
+	static const uint64_t vs[][2] = {{0, 0}, {5, 3}, {0xf0f0f0f0f0f0f0f0ull, 0x0ff00ff00ff00ff0ull}, {~0ull, 1}, {0x8000000000000001ull, 0x7fffffffffffffffull}};
+	for (size_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
+#define R(op, N, e) { uint##N##_t c = (uint##N##_t)vs[i][0], o = c, v = (uint##N##_t)vs[i][1]; \
+		EQ(tg_rmw_##op##_##N(&c, v), o); EQ(c, (uint##N##_t)(e)); }
+#define X(N) RMWS(N) { uint##N##_t c = (uint##N##_t)vs[i][0], v = (uint##N##_t)vs[i][1]; int32_t ok = 7; \
+		EQ(tg_cas_##N(&c, (uint##N##_t)(c + 1), v, &ok), (uint##N##_t)vs[i][0]); EQ(ok, 0); EQ(c, (uint##N##_t)vs[i][0]); \
+		EQ(tg_cas_##N(&c, c, v, &ok), (uint##N##_t)vs[i][0]); EQ(ok, 1); EQ(c, v); }
+		WIDTHS
+#undef X
+#undef R
+	}
+	int32_t a32 = -9;
+	int64_t a64 = INT64_MIN + 3, pair[2] = {0, 0};
+	double af = -2.75;
+	EQ(tg_aload_32(&a32), -9);
+	EQ(tg_aload_64(&a64), INT64_MIN + 3);
+	FEQ(tg_aload_f64(&af), -2.75);
+	tg_astore_32(&a32, 123456);
+	tg_astore_64(&a64, -1);
+	tg_astore_f64(&af, 1e-300);
+	CHECK(a32 == 123456 && a64 == -1 && af == 1e-300);
+	tg_fence_pair(pair, 11, -22);
+	CHECK(pair[0] == 11 && pair[1] == -22);
+}
+
+static void check_intrinsics(void) {
+	static const uint64_t vs[] = {0, 1, 0x80, 0x8000, 0x80000000u, 0x8000000000000000ull, 0x0123456789abcdefull, 0x10, 0xfff0, ~0ull};
+	for (size_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
+#define X(N) { uint##N##_t x = (uint##N##_t)vs[i]; EQ(tg_bswap_##N(x), (uint##N##_t)ref_bswap(x, N)); \
+		EQ(tg_popcount_##N(x), ref_popcount(x)); EQ(tg_ctz_##N(x), ref_ctz(x, N)); EQ(tg_clz_##N(x), ref_clz(x, N)); }
+		WIDTHS
+#undef X
+	}
+	FEQ(tg_sqrt_f32(2.0f), (double)sqrtf(2.0f));
+	FEQ(tg_sqrt_f64(2.0), sqrt(2.0));
+	FEQ(tg_sqrt_f64(0.0), 0.0);
+	CHECK(isnan(tg_sqrt_f64(-1.0)));
+	CHECK(tg_frame_addr() != NULL);
+	CHECK(tg_ret_addr() != NULL);
+	void *ptrs[6];
+	EQ(tg_alloca_loop(100, 6, ptrs), 2 * (1 + 2 + 3 + 4 + 5 + 6));
+	EQ(tg_alloca_loop(3, 1, ptrs), 2);
+	EQ(tg_alloca_loop(4000, 6, ptrs), 2 * 21);
+	for (int i = 0; i < 6; i++) {
+		CHECK((uintptr_t)ptrs[i] % 64 == 0);
+		for (int j = 0; j < i; j++) CHECK(ptrs[i] != ptrs[j]);
+	}
+}
+
+#ifdef HAVE_LD
+// bit i is condition i of ==, !=, <, <=, >, >=
+static int ld_conds(long double a, long double b) {
+	return (a == b) | (a != b) << 1 | (a < b) << 2 | (a <= b) << 3 | (a > b) << 4 | (a >= b) << 5;
+}
+
+static void check_long_double(void) {
+	long double third = 1.0L / 3, big = 12345678901234567.0L, nan = (long double)NAN;
+	static const long double vs[] = {1.5L, -0.25L, 7.0L, 1e300L};
+	CHECK(tg_ld_add(third, big) == third + big);
+	CHECK(tg_ld_sub(third, big) == third - big);
+	CHECK(tg_ld_mul(third, big) == third * big);
+	CHECK(tg_ld_div(big, third) == big / third);
+	CHECK(tg_ld_neg(third) == -third);
+	CHECK(isnan((double)tg_ld_add(nan, third)));
+	CHECK(tg_ld_call(third) == -1.0L);
+	for (size_t i = 0; i < 4; i++) {
+		EQ(tg_ld_cmp(vs[i], third), ld_conds(vs[i], third));
+		EQ(tg_ld_cmp(third, vs[i]), ld_conds(third, vs[i]));
+	}
+	EQ(tg_ld_cmp(third, third), ld_conds(third, third));
+	EQ(tg_ld_cmp(nan, third), 2);
+	EQ(tg_ld_cmp(third, nan), 2);
+	EQ(tg_ld_cmp(nan, nan), 2);
+	CHECK(tg_ld_from_i32(INT32_MIN) == (long double)INT32_MIN);
+	CHECK(tg_ld_from_i64(-1234567890123456789LL) == (long double)-1234567890123456789LL);
+	CHECK(tg_ld_from_u64(18446744073709551615ull) == (long double)18446744073709551615ull);
+	CHECK(tg_ld_from_f32(0.1f) == (long double)0.1f);
+	CHECK(tg_ld_from_f64(0.1) == (long double)0.1);
+	EQ(tg_ld_to_i32(-2147483.75L), -2147483);
+	EQ(tg_ld_to_i64(-9e17L - 0.5L), (int64_t)(-9e17L - 0.5L));
+	EQ(tg_ld_to_u64(1.8e19L), (int64_t)(uint64_t)1.8e19L);
+	FEQ(tg_ld_to_f32(third), (double)(float)third);
+	FEQ(tg_ld_to_f64(third), (double)third);
+}
+#endif
+
 int main(void) {
 	check_data();
 	check_ops();
 	check_conversions();
 	check_memory();
 	check_calls();
+	check_atomics();
+	check_intrinsics();
+#ifdef HAVE_LD
+	check_long_double();
+#endif
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures != 0;
 }

@@ -73,7 +73,10 @@ extern _Thread_local int tg_tls_counter;
 extern _Thread_local long long tg_tls_big;
 #endif
 long long tg_misc(long long x);
-long long tg_far(long long x);
+long long tg_far(long long x); // x + TG_FAR_COUNT for x > 0, see build_far in abi.c
+#ifndef TG_FAR_COUNT
+#define TG_FAR_COUNT 250000
+#endif
 
 static int failures;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
@@ -609,7 +612,7 @@ int main(void) {
 #ifndef _WIN32
 	test_atomics_contended();
 #endif
-	CHECK(tg_far(5) == 250005);
+	CHECK(tg_far(5) == 5 + TG_FAR_COUNT);
 	CHECK(tg_far(-5) == -5);
 	printf(failures ? "%d FAILED\n" : "all passed\n", failures);
 	return failures != 0;

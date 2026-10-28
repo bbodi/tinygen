@@ -638,8 +638,11 @@ static void build_atomics(void) {
 	}
 }
 
-// long long tg_far(long long x): a conditional branch over about 4 MB of code
+// long long tg_far(long long x): a conditional branch over about 4 MB of code. The "c"
+// target adds 2500 instead of 250000: far jumps mean nothing to a C compiler, and clang takes
+// minutes over 250000 statements at -O2. run.sh compiles abi_main.c with TG_FAR_COUNT=2500.
 static void build_far(void) {
+	int count = c_failed >= 0 ? 2500 : 250000;
 	const tyg_type *ps[1] = {T(TYG_I64)};
 	tyg_proc *p = begin("tg_far", T(TYG_I64), ps, 1, 0, NULL);
 	tyg_local acc = tyg_local_new(p, 8, 8);
@@ -647,7 +650,7 @@ static void build_far(void) {
 	st(p, TYG_I64, tyg_at_local(acc, 0), tyg_param(p, 0));
 	tyg_branch(p, tyg_cmp(p, TYG_SGT, tyg_param(p, 0), k64(p, 0)), body, done);
 	tyg_block_set(p, body);
-	for (int i = 0; i < 250000; i++) {
+	for (int i = 0; i < count; i++) {
 		tyg_val v = tyg_load(p, TYG_I64, tyg_at_local(acc, 0), TYG_MEM_VOLATILE);
 		tyg_store(p, TYG_I64, tyg_at_local(acc, 0), tyg_bin(p, TYG_ADD, v, k64(p, 1)), TYG_MEM_VOLATILE);
 	}
@@ -1004,7 +1007,9 @@ int main(int argc, char **argv) {
 	build_misc();
 	build_far();
 	build_atomics();
-	if (t.arch == TYG_ARCH_ARM64 && t.os == TYG_OS_LINUX) check_ld_unsupported();
+	// the C output has the C compiler's long double, binary128 on arm64 Linux; abi_main.c
+	// checks none there
+	if (t.arch == TYG_ARCH_ARM64 && t.os == TYG_OS_LINUX && t.output != TYG_OUTPUT_C) check_ld_unsupported();
 	else build_ld();
 	check(tyg_module_write(m, argc > 1 ? argv[1] : "abi.o"));
 	tyg_module_free(m);

@@ -83,8 +83,8 @@ enum {
 void tyg_module_language(tyg_module *m, unsigned dwarf_language);
 
 /* Writes the object file, or the C source with TYG_OUTPUT_C. Returns 0 on success.
- * In the C output, atomics, alloca, long double arithmetic and the intrinsics are not
- * supported yet: the procedure fails. Named sections, aliases, common, weak and the
+ * In the C output, TYG_STACK_POINTER and TYG_STACK_RESTORE are not supported: the
+ * procedure fails. Named sections, aliases, common, weak and the
  * visibilities become attributes of the C compiler, which decides whether the
  * platform has them. */
 int tyg_module_write(tyg_module *m, const char *path);
@@ -378,7 +378,8 @@ void tyg_va_copy(tyg_proc *p, tyg_val dst, tyg_val src);
  * - Windows x64: MSVC's double, 8 bytes, passed like a double (MinGW's gcc has the x87
  *   type unless it builds with -mlong-double-64).
  * - arm64 Linux (IEEE binary128): not supported yet; the type exists for layouts, but a
- *   signature, call or operation that uses it fails.
+ *   signature, call or operation that uses it fails. The C output has it: there long
+ *   double is the C compiler's on every target, laid out as above.
  *
  * There is no constant call: the front end stores a constant's bytes in the target's
  * format, with tyg_store or as data. `dst` may be the same memory as an operand. */

@@ -206,7 +206,7 @@ enum {
 	tgOp_FToHalf,     // dst(i16) = f16 bits of a(aux float type), rounded by the cpu; arm64 only
 	tgOp_HalfToF,     // dst(f32) = the f16 bits a; arm64 only
 	tgOp_StackRestore, // rsp = a, a value of tgOp_StackPointer: frees the allocas since
-	tgOp_X87,         // x86-64 long double on the x87 unit, aux = tgX87Op, see there
+	tgOp_X87,         // x86-64 long double on the x87 unit, or the C output's long double; aux = tgX87Op
 	tgOp_Param,       // C output only: dst = parameter imm, or a pointer to it for an aggregate or long double
 	tgOp_VaStart,     // C output only: va_start of the va_list at a
 	tgOp_VaArg,       // C output only: dst = a pointer to the next argument of the va_list at a, of type p->c_va_types[imm]
@@ -678,6 +678,7 @@ struct tyg_proc {
 	i32                call_align;    // the alignment the calls' stack arguments need past 16, or 0
 	bool               c_returns_twice; // C output: it calls setjmp, so its variables are volatile
 	tgTypePtrArray    c_va_types;      // C output: the type of each tgOp_VaArg
+	u8                c_uses;          // C output: the tgCUse parts of the prelude its text uses
 
 	i32                file_id;
 	i32                last_line;
@@ -927,6 +928,7 @@ struct tyg_module {
 	tgMap              c_type_ids; // record and array tyg_type -> the N of struct tyg_r<N>
 	tgBytes            c_types;    // the definitions of those structs, in dependency order
 	tgBytes            c_procs;    // the procedures' C text
+	u8                 c_uses;     // the tgCUse parts of the prelude the procedures use
 
 	tgBytes            output;    // the object, after tg_module_emit
 	char                error[512];

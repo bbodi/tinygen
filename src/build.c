@@ -788,26 +788,24 @@ tyg_val tyg_select(tyg_proc *p, tyg_val cond, tyg_val a, tyg_val b) {
 //
 // x86-64 SysV computes on the x87 unit with tgOp_X87, whose operands are pointers to the
 // values in memory. On arm64 macOS and Windows x64 long double is a double: the calls load,
-// compute and store doubles.
+// compute and store doubles. The C output takes the tgOp_X87 form on every target, which it
+// prints as the C compiler's long double; on arm64 Linux that is binary128, whose 16 bytes
+// aligned to 16 tyg_type_scalar already gives.
 ////////////////////////////////////////////////////////////////
 
 // Whether the builder may go on with a long double operation.
 TG_INTERNAL bool tg_ld_ok(tgProc *p) {
 	if (!tg_b_ok(p)) return false;
-	if (tg_is_c_output()) {
-		tg_fail(p, "C output: long double is not supported yet");
-		return false;
-	}
-	if (!tg_ld_supported()) {
+	if (!tg_is_c_output() && !tg_ld_supported()) {
 		tg_fail(p, "long double is not supported on this target yet");
 		return false;
 	}
 	return true;
 }
 
-// Whether long double is a double on this target.
+// Whether long double is a double the operations load and store as such.
 TG_INTERNAL bool tg_ld_is_f64(void) {
-	return tg_is_arm64() || tg_is_win64();
+	return !tg_is_c_output() && (tg_is_arm64() || tg_is_win64());
 }
 
 TG_INTERNAL u32 tg_x87(tgProc *p, tgX87Op op, tgType type, tgType dst_type, u32 a, u32 b, u32 c, i64 imm) {

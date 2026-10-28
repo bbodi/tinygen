@@ -71,10 +71,18 @@ done
 for t in linux-x64 linux-arm64 macos-arm64 macos-x64 windows; do
 	emit "bench-$t" "$out/bench" "$out/obj/bench-$t.o" "$t" 2000 2000
 done
-# the C output is text, not an object: --save and --compare leave it out
-rm -f "$out/obj/cgen-c.c" "$out/obj/cgen-$host.o"
+# the C output is text, not an object: --save and --compare leave it out. A generator
+# exits non-zero when C mode refuses a procedure.
+rm -f "$out"/obj/*-c.c "$out"/obj/cgen-c-*.c "$out/obj/cgen-$host.o"
 emit cgen-c "$out/cgen" "$out/obj/cgen-c.c" c
 [ -z "$host" ] || emit "cgen-$host" "$out/cgen" "$out/obj/cgen-$host.o" "$host"
+emit smoke-c "$out/smoke" "$out/obj/smoke-c.c" c
+emit abi-c "$out/abi" "$out/obj/abi-c.c" c
+emit bench-c "$out/bench" "$out/obj/bench-c.c" c 2000 2000
+# x86-64 C, for its x87 long double, when arm64 macOS can run it under Rosetta
+if [ "$host" = macos-arm64 ] && arch -x86_64 /usr/bin/true 2> /dev/null; then
+	emit cgen-c-macos-x64 "$out/cgen" "$out/obj/cgen-c-macos-x64.c" c-macos-x64
+fi
 
 if [ -n "$save" ]; then
 	mkdir -p "$save"
@@ -135,7 +143,7 @@ esac
 run_cgen() {
 	bin="$out/cgen-$1"
 	# shellcheck disable=SC2086
-	if ! $cc -std=c99 -Wall -Wextra $2 "$3" test/cgen_main.c -o "$bin" > "$bin.log" 2>&1 ||
+	if ! $cc -std=c99 -Wall -Wextra $2 "$3" test/cgen_main.c -o "$bin" -lm > "$bin.log" 2>&1 ||
 		{ case "$3" in *.c) [ -s "$bin.log" ] ;; *) false ;; esac; }; then
 		cat "$bin.log"
 		fail "compile cgen $1"
@@ -143,6 +151,7 @@ run_cgen() {
 	fi
 	if "$bin" > "$bin.log" 2>&1; then echo "cgen $1: $(tail -n 1 "$bin.log")"; else cat "$bin.log"; fail "run cgen $1"; fi
 }
+c_start=$(date +%s)
 if [ -f "$out/obj/cgen-c.c" ]; then
 	echo "checking the C output"
 	run_cgen c-O0 -O0 "$out/obj/cgen-c.c"
@@ -157,7 +166,43 @@ if [ -f "$out/obj/cgen-c.c" ]; then
 		skipped="$skipped cgen-ubsan"
 	fi
 	[ ! -f "$out/obj/cgen-$host.o" ] || run_cgen "$host-O0" -O0 "$out/obj/cgen-$host.o"
+	if [ -f "$out/obj/cgen-c-macos-x64.c" ]; then
+		run_cgen c-macos-x64-O0 "-arch x86_64 -O0" "$out/obj/cgen-c-macos-x64.c"
+		run_cgen c-macos-x64-O2 "-arch x86_64 -O2" "$out/obj/cgen-c-macos-x64.c"
+	fi
 fi
+
+# run_c_suite name main extra_flags: compiles the generator's C output, where a warning fails
+# it, at -O0 and -O2, links it with its main like run_native does, and runs it. bench has no
+# main: its C is compiled only.
+run_c_suite() {
+	src="$out/obj/$1-c.c"
+	[ -f "$src" ] || return 0
+	for o in -O0 -O2; do
+		bin="$out/$1-c$o"
+		# shellcheck disable=SC2086
+		if ! $cc -std=c99 -Wall -Wextra $o -c "$src" -o "$bin.o" > "$bin.log" 2>&1 || [ -s "$bin.log" ]; then
+			cat "$bin.log"
+			fail "compile $1 c$o"
+			continue
+		fi
+		if [ -z "$2" ]; then echo "$1 c$o: compiled"; continue; fi
+		# shellcheck disable=SC2086
+		if ! $cc $o $3 "$2" "$bin.o" -o "$bin" -lpthread -lm > "$bin.log" 2>&1; then
+			cat "$bin.log"
+			fail "link $1 c$o"
+			continue
+		fi
+		if "$bin" > "$bin.log" 2>&1; then echo "$1 c$o: $(tail -n 1 "$bin.log")"; else cat "$bin.log"; fail "run $1 c$o"; fi
+	done
+}
+if [ -f "$out/obj/smoke-c.c" ]; then
+	echo "checking smoke, abi and bench as C"
+	run_c_suite smoke test/smoke_main.c ""
+	run_c_suite abi test/abi_main.c -DTG_FAR_COUNT=2500 # see build_far in abi.c
+	run_c_suite bench "" ""
+fi
+echo "the C checks took $(($(date +%s) - c_start)) s"
 
 if [ $docker -eq 1 ]; then
 	for t in linux-arm64 linux-x64; do

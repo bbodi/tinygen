@@ -3,10 +3,10 @@
 // so the same main runs against both backends.
 //
 //   cc -std=c99 -Iinclude test/cgen.c src/tinygen.c -o cgen
-//   ./cgen out.c [c|linux-x64|linux-arm64|macos-arm64|macos-x64|windows]
-//   cc -std=c99 -Wall -Wextra out.c test/cgen_main.c -o cgen_main && ./cgen_main
+//   ./cgen out.c [c|linux-x64|linux-arm64|macos-arm64|macos-x64|windows|c-<target>]
+//   cc -std=c99 -Wall -Wextra out.c test/cgen_main.c -o cgen_main -lm && ./cgen_main
 //
-// "c", the default, writes C (TYG_OUTPUT_C) for the host target.
+// "c", the default, writes C (TYG_OUTPUT_C) for the host target, c-<target> for another.
 #include "tinygen.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -438,6 +438,195 @@ static void build_setjmp(void) {
 	check(tyg_proc_end(p));
 }
 
+// Step 4: atomics, intrinsics, alloca, long double.
+
+static const tyg_scalar int_scalars[4] = {TYG_I8, TYG_I16, TYG_I32, TYG_I64};
+static const char *const rmw_names[7] = {"xchg", "add", "sub", "and", "or", "xor", "nand"};
+
+// T tg_rmw_<op>_<bits>(T *p, T v): the old *p, for each operation and width; T is unsigned
+// T tg_cas_<bits>(T *p, T expected, T desired, int32_t *ok): the old *p
+// T tg_aload_<bits>(T *p); void tg_astore_<bits>(T *p, T v), also for double as f64
+// void tg_fence_pair(int64_t *p, int64_t a, int64_t b) { p[0] = a; fence; p[1] = b; }
+static void build_atomics(void) {
+	const tyg_type *ptr = tyg_type_ptr(m);
+	char name[64];
+	for (int w = 0; w < 4; w++) {
+		tyg_scalar s = int_scalars[w];
+		const tyg_type *u = tyg_type_int(m, s, 0);
+		int bits = 8 << w;
+		for (int op = 0; op < 7; op++) {
+			snprintf(name, sizeof(name), "tg_rmw_%s_%d", rmw_names[op], bits);
+			tyg_proc *p = begin(name, TYG_SYM_GLOBAL, sig(u, ptr, u, NULL, 0));
+			tyg_ret(p, tyg_atomic_rmw(p, (tyg_rmw)op, tyg_at_val(tyg_param(p, 0), 0), tyg_param(p, 1)));
+			check(tyg_proc_end(p));
+		}
+		const tyg_type *ps[4] = {ptr, u, u, ptr};
+		snprintf(name, sizeof(name), "tg_cas_%d", bits);
+		tyg_proc *p = begin(name, TYG_SYM_GLOBAL, tyg_sig_new(m, u, ps, 4, 0));
+		tyg_val ok = 0;
+		tyg_val old = tyg_atomic_cas(p, tyg_at_val(tyg_param(p, 0), 0), tyg_param(p, 1), tyg_param(p, 2), &ok);
+		tyg_store(p, TYG_I32, tyg_at_val(tyg_param(p, 3), 0), tyg_convert(p, TYG_ZEXT, TYG_I32, ok), 0);
+		tyg_ret(p, old);
+		check(tyg_proc_end(p));
+	}
+	for (int k = 0; k < 3; k++) {
+		tyg_scalar s = k == 0 ? TYG_I32 : k == 1 ? TYG_I64 : TYG_F64;
+		const char *suffix = k == 0 ? "32" : k == 1 ? "64" : "f64";
+		snprintf(name, sizeof(name), "tg_aload_%s", suffix);
+		tyg_proc *p = begin(name, TYG_SYM_GLOBAL, sig(ty(s), ptr, NULL, NULL, 0));
+		tyg_ret(p, tyg_atomic_load(p, s, tyg_at_val(tyg_param(p, 0), 0)));
+		check(tyg_proc_end(p));
+		snprintf(name, sizeof(name), "tg_astore_%s", suffix);
+		p = begin(name, TYG_SYM_GLOBAL, sig(ty(TYG_VOID), ptr, ty(s), NULL, 0));
+		tyg_atomic_store(p, s, tyg_at_val(tyg_param(p, 0), 0), tyg_param(p, 1));
+		tyg_ret(p, 0);
+		check(tyg_proc_end(p));
+	}
+	tyg_proc *p = begin("tg_fence_pair", TYG_SYM_GLOBAL, sig(ty(TYG_VOID), ptr, ty(TYG_I64), ty(TYG_I64), 0));
+	tyg_store(p, TYG_I64, tyg_at_val(tyg_param(p, 0), 0), tyg_param(p, 1), 0);
+	tyg_fence(p);
+	tyg_store(p, TYG_I64, tyg_at_val(tyg_param(p, 0), 8), tyg_param(p, 2), 0);
+	tyg_ret(p, 0);
+	check(tyg_proc_end(p));
+}
+
+// T tg_<op>_<bits>(T x) for bswap, popcount, ctz and clz at each width, T unsigned; float tg_sqrt_f32(float),
+// double tg_sqrt_f64(double); void *tg_frame_addr(void) and void *tg_ret_addr(void), after a
+// cpu relax. In C, TYG_STACK_POINTER fails the procedure.
+static void build_intrinsics(int c_output) {
+	static const char *const names[4] = {"bswap", "popcount", "ctz", "clz"};
+	static const tyg_intrinsic ops[4] = {TYG_BSWAP, TYG_POPCOUNT, TYG_CTZ, TYG_CLZ};
+	char name[64];
+	for (int op = 0; op < 4; op++) {
+		for (int w = 0; w < 4; w++) {
+			const tyg_type *u = tyg_type_int(m, int_scalars[w], 0);
+			snprintf(name, sizeof(name), "tg_%s_%d", names[op], 8 << w);
+			tyg_proc *p = begin(name, TYG_SYM_GLOBAL, sig(u, u, NULL, NULL, 0));
+			tyg_ret(p, tyg_intrin(p, ops[op], tyg_param(p, 0)));
+			check(tyg_proc_end(p));
+		}
+	}
+	for (int k = 0; k < 2; k++) {
+		tyg_scalar s = k ? TYG_F64 : TYG_F32;
+		tyg_proc *p = begin(k ? "tg_sqrt_f64" : "tg_sqrt_f32", TYG_SYM_GLOBAL, sig(ty(s), ty(s), NULL, NULL, 0));
+		tyg_ret(p, tyg_intrin(p, TYG_SQRT, tyg_param(p, 0)));
+		check(tyg_proc_end(p));
+	}
+	for (int k = 0; k < 2; k++) {
+		tyg_proc *p = begin(k ? "tg_ret_addr" : "tg_frame_addr", TYG_SYM_GLOBAL, sig(tyg_type_ptr(m), NULL, NULL, NULL, 0));
+		tyg_intrin(p, TYG_CPU_RELAX, 0);
+		tyg_ret(p, tyg_intrin(p, k ? TYG_RETURN_ADDRESS : TYG_FRAME_ADDRESS, 0));
+		check(tyg_proc_end(p));
+	}
+	if (c_output) {
+		tyg_proc *p = begin("tg_stack_save", TYG_SYM_GLOBAL, sig(ty(TYG_VOID), NULL, NULL, NULL, 0));
+		tyg_intrin(p, TYG_STACK_RESTORE, tyg_intrin(p, TYG_STACK_POINTER, 0));
+		tyg_ret(p, 0);
+		if (tyg_proc_end(p) == 0 || strstr(tyg_error(m), "stack save and restore are not supported") == NULL) {
+			fprintf(stderr, "cgen.c: stack save did not fail: %s\n", tyg_error(m) ? tyg_error(m) : "no error");
+			exit(1);
+		}
+	}
+}
+
+// int64_t tg_alloca_loop(int64_t n, int32_t iters, void **ptrs): iters times n bytes aligned
+// to 64, each set to its number from 1 and kept in ptrs; then the sum of the first and last
+// byte of each, plus 1 << 32 if one is not aligned
+static void build_alloca(void) {
+	const tyg_type *ptr = tyg_type_ptr(m), *i64 = ty(TYG_I64);
+	tyg_proc *p = begin("tg_alloca_loop", TYG_SYM_GLOBAL, sig(i64, i64, ty(TYG_I32), ptr, 0));
+	tyg_val n = tyg_param(p, 0), iters = tyg_param(p, 1), ptrs = tyg_param(p, 2);
+	tyg_local i = tyg_local_new(p, 4, 4), sum = tyg_local_new(p, 8, 8);
+	tyg_store(p, TYG_I64, tyg_at_local(sum, 0), k64(p, 0), 0);
+	for (int pass = 0; pass < 2; pass++) {
+		tyg_block head = tyg_block_new(p), body = tyg_block_new(p), done = tyg_block_new(p);
+		tyg_store(p, TYG_I32, tyg_at_local(i, 0), k32(p, 0), 0);
+		tyg_jump(p, head);
+		tyg_block_set(p, head);
+		tyg_val iv = tyg_load(p, TYG_I32, tyg_at_local(i, 0), 0);
+		tyg_branch(p, tyg_cmp(p, TYG_SLT, iv, iters), body, done);
+		tyg_block_set(p, body);
+		tyg_addr slot = tyg_at_val(tyg_bin(p, TYG_ADD, ptrs, tyg_bin(p, TYG_MUL, tyg_convert(p, TYG_SEXT, TYG_I64, iv), k64(p, 8))), 0);
+		if (pass == 0) {
+			tyg_val a = tyg_alloca(p, n, 64);
+			tyg_set_dyn(p, a, tyg_bin(p, TYG_ADD, iv, k32(p, 1)), n);
+			tyg_store(p, TYG_I64, slot, a, 0);
+		} else {
+			tyg_val a = tyg_load(p, TYG_I64, slot, 0);
+			tyg_val first = tyg_load(p, TYG_I8, tyg_at_val(a, 0), 0);
+			tyg_val last = tyg_load(p, TYG_I8, tyg_at_val(tyg_bin(p, TYG_ADD, a, n), -1), 0);
+			tyg_val s = tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_ZEXT, TYG_I64, first), tyg_convert(p, TYG_ZEXT, TYG_I64, last));
+			tyg_val bad = tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_cmp(p, TYG_NE, tyg_bin(p, TYG_AND, a, k64(p, 63)), k64(p, 0)));
+			s = tyg_bin(p, TYG_ADD, s, tyg_bin(p, TYG_SHL, bad, k64(p, 32)));
+			tyg_store(p, TYG_I64, tyg_at_local(sum, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(sum, 0), 0), s), 0);
+		}
+		tyg_store(p, TYG_I32, tyg_at_local(i, 0), tyg_bin(p, TYG_ADD, iv, k32(p, 1)), 0);
+		tyg_jump(p, head);
+		tyg_block_set(p, done);
+	}
+	tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_local(sum, 0), 0));
+	check(tyg_proc_end(p));
+}
+
+// long double tg_ld_<op>(long double a, long double b) for add, sub, mul, div, and neg of a
+// int32_t tg_ld_cmp(long double a, long double b): bit i is ==, !=, <, <=, >, >= in turn
+// long double tg_ld_from_<X>(X v) and X tg_ld_to_<X>(long double x) for X in i32 i64 u64 f32 f64
+// long double tg_ld_call(long double a): tg_ld_add(a, tg_ld_neg(a) - 1) through calls, = -1
+static void build_long_double(void) {
+	static const char *const bin_names[4] = {"add", "sub", "mul", "div"};
+	static const tyg_binop bin_ops[4] = {TYG_FADD, TYG_FSUB, TYG_FMUL, TYG_FDIV};
+	static const struct { const char *name; tyg_scalar s; int sgn; } xs[5] = {
+		{"i32", TYG_I32, 1}, {"i64", TYG_I64, 1}, {"u64", TYG_I64, 0}, {"f32", TYG_F32, 0}, {"f64", TYG_F64, 0},
+	};
+	const tyg_type *ld = ty(TYG_F80);
+	int64_t size = tyg_type_size(ld), align = tyg_type_align(ld);
+	char name[64];
+	tyg_sym syms[5];
+	for (int op = 0; op < 5; op++) {
+		snprintf(name, sizeof(name), "tg_ld_%s", op < 4 ? bin_names[op] : "neg");
+		syms[op] = tyg_symbol(m, name, TYG_SYM_FUNC | TYG_SYM_GLOBAL);
+		tyg_proc *p = tyg_proc_begin(m, syms[op], sig(ld, ld, op < 4 ? ld : NULL, NULL, 0));
+		tyg_local r = tyg_local_new(p, size, align);
+		if (op < 4) tyg_ld_bin(p, bin_ops[op], tyg_at_local(r, 0), tyg_at_val(tyg_param(p, 0), 0), tyg_at_val(tyg_param(p, 1), 0));
+		else tyg_ld_neg(p, tyg_at_local(r, 0), tyg_at_val(tyg_param(p, 0), 0));
+		tyg_ret_mem(p, tyg_at_local(r, 0));
+		check(tyg_proc_end(p));
+	}
+	tyg_proc *p = begin("tg_ld_cmp", TYG_SYM_GLOBAL, sig(ty(TYG_I32), ld, ld, NULL, 0));
+	tyg_val bits = k32(p, 0);
+	for (int c = 0; c < 6; c++) {
+		tyg_val one = tyg_convert(p, TYG_ZEXT, TYG_I32, tyg_ld_cmp(p, (tyg_cond)(TYG_FEQ + c), tyg_at_val(tyg_param(p, 0), 0), tyg_at_val(tyg_param(p, 1), 0)));
+		bits = tyg_bin(p, TYG_OR, bits, tyg_bin(p, TYG_SHL, one, k32(p, c)));
+	}
+	tyg_ret(p, bits);
+	check(tyg_proc_end(p));
+	for (int k = 0; k < 5; k++) {
+		int fl = xs[k].s == TYG_F32 || xs[k].s == TYG_F64;
+		const tyg_type *xt = fl ? ty(xs[k].s) : tyg_type_int(m, xs[k].s, xs[k].sgn);
+		snprintf(name, sizeof(name), "tg_ld_from_%s", xs[k].name);
+		p = begin(name, TYG_SYM_GLOBAL, sig(ld, xt, NULL, NULL, 0));
+		tyg_local r = tyg_local_new(p, size, align);
+		tyg_ld_from(p, fl ? TYG_FEXT : xs[k].sgn ? TYG_SITOF : TYG_UITOF, tyg_at_local(r, 0), tyg_param(p, 0));
+		tyg_ret_mem(p, tyg_at_local(r, 0));
+		check(tyg_proc_end(p));
+		snprintf(name, sizeof(name), "tg_ld_to_%s", xs[k].name);
+		p = begin(name, TYG_SYM_GLOBAL, sig(xt, ld, NULL, NULL, 0));
+		tyg_ret(p, tyg_ld_to(p, fl ? TYG_FTRUNC : xs[k].sgn ? TYG_FTOSI : TYG_FTOUI, xs[k].s, tyg_at_val(tyg_param(p, 0), 0)));
+		check(tyg_proc_end(p));
+	}
+	tyg_sig *s_un = sig(ld, ld, NULL, NULL, 0), *s_bin = sig(ld, ld, ld, NULL, 0);
+	p = begin("tg_ld_call", TYG_SYM_GLOBAL, s_un);
+	tyg_local n = tyg_local_new(p, size, align), one = tyg_local_new(p, size, align), r = tyg_local_new(p, size, align);
+	tyg_addr an = tyg_at_local(n, 0), ar = tyg_at_local(r, 0);
+	tyg_arg a[2] = {M(tyg_at_val(tyg_param(p, 0), 0)), M(an)};
+	tyg_call(p, s_un, tyg_direct(syms[4]), a, 1, NULL, &an);
+	tyg_ld_from(p, TYG_SITOF, tyg_at_local(one, 0), k32(p, 1));
+	tyg_ld_bin(p, TYG_FSUB, an, an, tyg_at_local(one, 0));
+	tyg_call(p, s_bin, tyg_direct(syms[0]), a, 2, NULL, &ar);
+	tyg_ret_mem(p, ar);
+	check(tyg_proc_end(p));
+}
+
 int main(int argc, char **argv) {
 	char const *out = argc > 1 ? argv[1] : "cgen-c.c";
 	char const *target = argc > 2 ? argv[2] : "c";
@@ -449,16 +638,18 @@ int main(int argc, char **argv) {
 	tyg_target t = tyg_host_target();
 	t.output = TYG_OUTPUT_C;
 	if (strcmp(target, "c") != 0) {
+		// c-<target>: C for that target, which run.sh compiles for x86-64 under Rosetta
+		int c_for = strncmp(target, "c-", 2) == 0;
 		size_t i = 0;
-		while (i < sizeof(targets) / sizeof(targets[0]) && strcmp(target, targets[i].name) != 0) i++;
+		while (i < sizeof(targets) / sizeof(targets[0]) && strcmp(target + 2 * c_for, targets[i].name) != 0) i++;
 		if (i == sizeof(targets) / sizeof(targets[0])) {
-			fprintf(stderr, "usage: cgen out [c|linux-x64|linux-arm64|macos-arm64|macos-x64|windows]\n");
+			fprintf(stderr, "usage: cgen out [c|linux-x64|linux-arm64|macos-arm64|macos-x64|windows|c-<target>]\n");
 			return 2;
 		}
 		t.arch = targets[i].arch;
 		t.os = targets[i].os;
 		t.pic = t.debug_info = 1;
-		t.output = TYG_OUTPUT_OBJECT;
+		t.output = c_for ? TYG_OUTPUT_C : TYG_OUTPUT_OBJECT;
 	}
 	m = tyg_module_new(t, "cgen.tg");
 	if (!m) { fprintf(stderr, "no module\n"); return 1; }
@@ -472,6 +663,11 @@ int main(int argc, char **argv) {
 	build_varargs();
 	build_structs();
 	build_setjmp();
+	build_atomics();
+	build_intrinsics(t.output == TYG_OUTPUT_C);
+	build_alloca();
+	// arm64 Linux has no native long double yet; cgen_main.c checks none there
+	if (!(t.arch == TYG_ARCH_ARM64 && t.os == TYG_OS_LINUX && t.output == TYG_OUTPUT_OBJECT)) build_long_double();
 	check(tyg_module_write(m, out));
 	tyg_module_free(m);
 	return 0;

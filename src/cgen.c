@@ -133,6 +133,120 @@ static char const tg_c_prelude[] =
 	"typedef long double TYG_F80;\n"
 	"#endif\n";
 
+// The parts of the prelude a module's procedures may use, see tgProc.c_uses.
+enum {
+	tgCUse_Atomics = 1, // tg_c_atomics_prelude
+	tgCUse_Intrin  = 2, // tg_c_intrin_prelude
+	tgCUse_Ld      = 4, // tg_c_ld_prelude
+};
+
+// The intrinsics and alloca. CTZ and CLZ of zero are the width, like the lowerings'.
+static char const tg_c_intrin_prelude[] =
+	"#if defined(__GNUC__) || defined(__clang__)\n"
+	"#define TYG_BSWAP_16(x) __builtin_bswap16(x)\n"
+	"#define TYG_BSWAP_32(x) __builtin_bswap32(x)\n"
+	"#define TYG_BSWAP_64(x) __builtin_bswap64(x)\n"
+	"#define TYG_POPCOUNT_32(x) __builtin_popcount(x)\n"
+	"#define TYG_POPCOUNT_64(x) __builtin_popcountll(x)\n"
+	"#define TYG_CTZ_32(x) ((x) ? __builtin_ctz(x) : 32)\n"
+	"#define TYG_CTZ_64(x) ((x) ? __builtin_ctzll(x) : 64)\n"
+	"#define TYG_CLZ_32(x) ((x) ? __builtin_clz(x) : 32)\n"
+	"#define TYG_CLZ_64(x) ((x) ? __builtin_clzll(x) : 64)\n"
+	"#define TYG_FRAME_ADDRESS() __builtin_frame_address(0)\n"
+	"#define TYG_RETURN_ADDRESS() __builtin_return_address(0)\n"
+	"#define TYG_ALLOCA(n) __builtin_alloca(n)\n"
+	"#if defined(__x86_64__) || defined(__i386__)\n"
+	"#define TYG_CPU_RELAX() __builtin_ia32_pause()\n"
+	"#elif defined(__aarch64__) || defined(__arm__)\n"
+	"#define TYG_CPU_RELAX() __asm__ __volatile__(\"yield\")\n"
+	"#else\n"
+	"#define TYG_CPU_RELAX() ((void)0)\n"
+	"#endif\n"
+	"#elif defined(_MSC_VER)\n"
+	"#include <intrin.h>\n"
+	"#include <malloc.h>\n"
+	"#define TYG_BSWAP_16(x) _byteswap_ushort(x)\n"
+	"#define TYG_BSWAP_32(x) _byteswap_ulong(x)\n"
+	"#define TYG_BSWAP_64(x) _byteswap_uint64(x)\n"
+	"static __inline uint32_t tyg_popcount64(uint64_t x) {\n"
+	"\tx = x - ((x >> 1) & 0x5555555555555555ull);\n"
+	"\tx = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);\n"
+	"\treturn (uint32_t)((((x + (x >> 4)) & 0x0f0f0f0f0f0f0f0full) * 0x0101010101010101ull) >> 56);\n"
+	"}\n"
+	"static __inline uint32_t tyg_ctz64(uint64_t x) { unsigned long i; return _BitScanForward64(&i, x) ? (uint32_t)i : 64; }\n"
+	"static __inline uint32_t tyg_clz64(uint64_t x) { unsigned long i; return _BitScanReverse64(&i, x) ? 63 - (uint32_t)i : 64; }\n"
+	"#define TYG_POPCOUNT_32(x) tyg_popcount64(x)\n"
+	"#define TYG_POPCOUNT_64(x) tyg_popcount64(x)\n"
+	"#define TYG_CTZ_32(x) ((x) ? tyg_ctz64(x) : 32)\n"
+	"#define TYG_CTZ_64(x) tyg_ctz64(x)\n"
+	"#define TYG_CLZ_32(x) (tyg_clz64(x) - 32)\n"
+	"#define TYG_CLZ_64(x) tyg_clz64(x)\n"
+	"#define TYG_FRAME_ADDRESS() ((void *)((char *)_AddressOfReturnAddress() - sizeof(void *)))\n"
+	"#define TYG_RETURN_ADDRESS() _ReturnAddress()\n"
+	"#define TYG_ALLOCA(n) _alloca(n)\n"
+	"#if defined(_M_ARM64)\n"
+	"#define TYG_CPU_RELAX() __yield()\n"
+	"#else\n"
+	"#define TYG_CPU_RELAX() _mm_pause()\n"
+	"#endif\n"
+	"#endif\n"
+	"#define TYG_BSWAP_8(x) (x)\n"
+	"#define TYG_POPCOUNT_8(x) TYG_POPCOUNT_32((uint32_t)(x))\n"
+	"#define TYG_POPCOUNT_16(x) TYG_POPCOUNT_32((uint32_t)(x))\n"
+	"#define TYG_CTZ_8(x) TYG_CTZ_32((uint32_t)(x) | 0x100u)\n" // a bit above the value: zero counts 8
+	"#define TYG_CTZ_16(x) TYG_CTZ_32((uint32_t)(x) | 0x10000u)\n"
+	"#define TYG_CLZ_8(x) (TYG_CLZ_32((uint32_t)(x)) - 24)\n"
+	"#define TYG_CLZ_16(x) (TYG_CLZ_32((uint32_t)(x)) - 16)\n";
+
+// long double through memcpy: the operands are bytes in locals or anywhere else.
+static char const tg_c_ld_prelude[] =
+	"static TYG_UNUSED TYG_F80 tyg_ld_get(uint64_t p) { TYG_F80 x; memcpy(&x, (void *)(uintptr_t)p, sizeof(x)); return x; }\n"
+	"static TYG_UNUSED void tyg_ld_set(uint64_t p, TYG_F80 x) { memcpy((void *)(uintptr_t)p, &x, sizeof(x)); }\n";
+
+// The names of the tgRmwOp operations in the TYG_ATOMIC_<name>_<bits> macros.
+static char const *const tg_c_rmw_names[] = {"XCHG", "FETCH_ADD", "FETCH_SUB", "FETCH_AND", "FETCH_OR", "FETCH_XOR", "FETCH_NAND"};
+
+// Prints the sequentially consistent atomics, for each width N in bits: TYG_ATOMIC_LOAD_N(p),
+// TYG_ATOMIC_STORE_N(p, v), TYG_ATOMIC_<rmw>_N(p, v) returning the old value,
+// TYG_ATOMIC_CAS_N(p, expected, desired, &ok) returning the old value, and TYG_FENCE().
+// p is a uintN_t *. MSVC has a nand, a load and a sub only through other operations.
+TG_INTERNAL void tg_c_atomics_prelude(tgBytes *b) {
+	static char const *const gnu[] = {"__atomic_exchange_n", "__atomic_fetch_add", "__atomic_fetch_sub", "__atomic_fetch_and", "__atomic_fetch_or", "__atomic_fetch_xor", "__atomic_fetch_nand"};
+	static char const *const ms[] = {"_InterlockedExchange", "_InterlockedExchangeAdd", "_InterlockedExchangeAdd", "_InterlockedAnd", "_InterlockedOr", "_InterlockedXor", NULL};
+	static char const *const ms_suffix[] = {"8", "16", "", "64"}, *const ms_type[] = {"char", "short", "long", "__int64"};
+	tg_c_puts(b, "#if defined(__GNUC__) || defined(__clang__)\n#define TYG_FENCE() __atomic_thread_fence(__ATOMIC_SEQ_CST)\n");
+	for (int w = 0; w < 4; w++) {
+		int n = 8 << w;
+		tg_c_printf(b, "#define TYG_ATOMIC_LOAD_%d(p) __atomic_load_n((p), __ATOMIC_SEQ_CST)\n", n);
+		tg_c_printf(b, "#define TYG_ATOMIC_STORE_%d(p, v) __atomic_store_n((p), (v), __ATOMIC_SEQ_CST)\n", n);
+		for (int op = 0; op < 7; op++) tg_c_printf(b, "#define TYG_ATOMIC_%s_%d(p, v) %s((p), (v), __ATOMIC_SEQ_CST)\n", tg_c_rmw_names[op], n, gnu[op]);
+		tg_c_printf(b, "static TYG_UNUSED uint%d_t tyg_cas%d(uint%d_t *p, uint%d_t e, uint%d_t d, uint8_t *ok) {\n"
+		               "\t*ok = (uint8_t)__atomic_compare_exchange_n(p, &e, d, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);\n\treturn e;\n}\n", n, n, n, n, n);
+	}
+	tg_c_puts(b, "#elif defined(_MSC_VER)\n#include <intrin.h>\n#if defined(_M_ARM64)\n#define TYG_FENCE() __dmb(_ARM64_BARRIER_ISH)\n"
+	             "#else\n#define TYG_FENCE() __faststorefence()\n#endif\n");
+	for (int w = 0; w < 4; w++) {
+		int n = 8 << w;
+		char const *sx = ms_suffix[w], *t = ms_type[w];
+		tg_c_printf(b, "#define TYG_ATOMIC_LOAD_%d(p) ((uint%d_t)_InterlockedOr%s((%s volatile *)(p), 0))\n", n, n, sx, t);
+		tg_c_printf(b, "#define TYG_ATOMIC_STORE_%d(p, v) ((void)_InterlockedExchange%s((%s volatile *)(p), (%s)(v)))\n", n, sx, t, t);
+		for (int op = 0; op < 6; op++) {
+			char const *neg = op == tgRmw_Sub ? "0u - " : "";
+			tg_c_printf(b, "#define TYG_ATOMIC_%s_%d(p, v) ((uint%d_t)%s%s((%s volatile *)(p), (%s)(%s(v))))\n", tg_c_rmw_names[op], n, n, ms[op], sx, t, t, neg);
+		}
+		tg_c_printf(b, "static __inline uint%d_t tyg_nand%d(uint%d_t *p, uint%d_t v) {\n"
+		               "\tuint%d_t o = *(volatile uint%d_t *)p, w;\n"
+		               "\twhile ((w = (uint%d_t)_InterlockedCompareExchange%s((%s volatile *)p, (%s)(uint%d_t)~(o & v), (%s)o)) != o) o = w;\n"
+		               "\treturn o;\n}\n", n, n, n, n, n, n, n, sx, t, t, n, t);
+		tg_c_printf(b, "#define TYG_ATOMIC_FETCH_NAND_%d(p, v) tyg_nand%d((p), (v))\n", n, n);
+		tg_c_printf(b, "static __inline uint%d_t tyg_cas%d(uint%d_t *p, uint%d_t e, uint%d_t d, uint8_t *ok) {\n"
+		               "\tuint%d_t o = (uint%d_t)_InterlockedCompareExchange%s((%s volatile *)p, (%s)d, (%s)e);\n"
+		               "\t*ok = o == e;\n\treturn o;\n}\n", n, n, n, n, n, n, n, sx, t, t, t);
+	}
+	tg_c_puts(b, "#endif\n");
+	for (int w = 0; w < 4; w++) tg_c_printf(b, "#define TYG_ATOMIC_CAS_%d(p, e, d, ok) tyg_cas%d((p), (e), (d), (ok))\n", 8 << w, 8 << w);
+}
+
 ////////////////////////////////////////////////////////////////
 // Names
 ////////////////////////////////////////////////////////////////
@@ -264,6 +378,7 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t);
 // struct tyg_r<N>, defined in m->c_types.
 TG_INTERNAL void tg_c_type_decl(tgModule *m, tgBytes *b, tyg_type const *t, char const *name) {
 	char const *space = name[0] ? " " : "";
+	if (t == &tg_t_f80_apple) t = &tg_t_f80; // a record of one double: the long double it stands for
 	switch (t->kind) {
 	case tgT_Void: tg_c_printf(b, "void%s%s", space, name); break;
 	case tgT_Int:  tg_c_printf(b, "%sint%d_t%s%s", t->is_signed ? "" : "u", t->bits, space, name); break;
@@ -364,6 +479,10 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 		free(lane);
 		free(lane_end);
 	}
+	// reading a struct out of a byte local through a cast breaks C's aliasing rules, so
+	// values move through memcpy, which the compilers turn into plain moves
+	tg_c_printf(&b, "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { struct tyg_r%d x; memcpy(&x, p, sizeof(x)); return x; }\n", n, n, n);
+	tg_c_printf(&b, "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { memcpy(p, &x, sizeof(x)); }\n", n, n);
 	tg_array_add_elems(&m->c_types, b.data, b.count);
 	tg_array_free(&b);
 	return n;
@@ -600,12 +719,29 @@ TG_INTERNAL void tg_c_unsupported(tgProc *p, tgOp op) {
 	tg_fail(p, msg);
 }
 
-// Prints the value of type t at memory m: `*(T *)(m)`.
+// Prints the aggregate or long double value of type t at memory m, read with memcpy.
 TG_INTERNAL void tg_c_mem_val(tgProc *p, tgBytes *b, tyg_type const *t, tgMem m) {
-	tg_c_puts(b, "*(");
-	tg_c_type_decl(p->m, b, t, "*");
-	tg_c_puts(b, ")");
+	if (t->kind == tgT_F80 || t == &tg_t_f80_apple) {
+		p->c_uses |= tgCUse_Ld;
+		tg_c_puts(b, "tyg_ld_get((uint64_t)(uintptr_t)");
+	} else {
+		tg_c_printf(b, "tyg_r%d_get(", tg_c_record(p->m, t));
+	}
 	tg_c_mem(p, b, m);
+	tg_c_puts(b, ")");
+}
+
+// Prints the start of a store of such a value to memory m: `tyg_rN_set(m, `; the caller
+// prints the value and `)`.
+TG_INTERNAL void tg_c_mem_set_begin(tgProc *p, tgBytes *b, tyg_type const *t, tgMem m) {
+	if (t->kind == tgT_F80 || t == &tg_t_f80_apple) {
+		p->c_uses |= tgCUse_Ld;
+		tg_c_puts(b, "tyg_ld_set((uint64_t)(uintptr_t)");
+	} else {
+		tg_c_printf(b, "tyg_r%d_set(", tg_c_record(p->m, t));
+	}
+	tg_c_mem(p, b, m);
+	tg_c_puts(b, ", ");
 }
 
 // Prints a call's expression: the callee by its name when its prototype has the call's
@@ -642,7 +778,7 @@ TG_INTERNAL void tg_c_call_expr(tgProc *p, tgBytes *b, tgCall const *call) {
 			tg_c_printf(b, ")v%u", a->vreg);
 		}
 	}
-	tg_c_puts(b, ");");
+	tg_c_puts(b, ")");
 }
 
 // Prints a call as a statement, its result stored to its vreg or memory.
@@ -657,12 +793,15 @@ TG_INTERNAL void tg_c_call(tgProc *p, tgBytes *b, tgCall const *call) {
 	} else if (call->result_vreg != 0) {
 		tg_c_printf(b, "v%u = (%s)", call->result_vreg, tg_c_utypes[p->vregs.data[call->result_vreg]]);
 	} else if (call->rets.count == 1) {
-		tg_c_mem_val(p, b, sig->ret, call->rets.data[0].dst);
-		tg_c_puts(b, " = ");
+		tg_c_mem_set_begin(p, b, sig->ret, call->rets.data[0].dst);
+		tg_c_call_expr(p, b, call);
+		tg_c_puts(b, ");");
+		return;
 	} else if (sig->ret != NULL && sig->ret->kind != tgT_Void) {
 		tg_c_puts(b, "(void)");
 	}
 	tg_c_call_expr(p, b, call);
+	tg_c_puts(b, ";");
 }
 
 // Prints `return` with the procedure's result: the value of a Ret, or a zero one for a Ret
@@ -688,6 +827,73 @@ TG_INTERNAL void tg_c_ret(tgProc *p, tgBytes *b, tgInstr const *in) {
 		tg_c_type_decl(p->m, b, rt, "tyg_r");
 		tg_c_puts(b, "; memset(&tyg_r, 0, sizeof(tyg_r)); return tyg_r; }");
 	}
+}
+
+// Prints an atomic access of `bits` to in->mem, see tg_c_atomics_prelude. A float load
+// goes through an integer.
+TG_INTERNAL void tg_c_atomic(tgProc *p, tgBytes *b, tgInstr const *in, int bits, char const *amp) {
+	char ptr[16];
+	snprintf(ptr, sizeof(ptr), "(uint%d_t *)", bits);
+	p->c_uses |= tgCUse_Atomics;
+	switch (in->op) {
+	case tgOp_AtomicLoad:
+		if (tg_type_is_float(p->vregs.data[in->dst])) tg_c_printf(b, "{ uint%d_t tyg_t = ", bits);
+		else tg_c_printf(b, "v%u = ", in->dst);
+		tg_c_printf(b, "TYG_ATOMIC_LOAD_%d(%s", bits, ptr);
+		tg_c_mem(p, b, in->mem);
+		if (tg_type_is_float(p->vregs.data[in->dst])) tg_c_printf(b, "); memcpy(%sv%u, &tyg_t, %d); }", amp, in->dst, bits / 8);
+		else tg_c_puts(b, ");");
+		return;
+	case tgOp_AtomicStore:
+		tg_c_printf(b, "TYG_ATOMIC_STORE_%d(%s", bits, ptr);
+		tg_c_mem(p, b, in->mem);
+		tg_c_printf(b, ", v%u);", in->a);
+		return;
+	case tgOp_AtomicRmw:
+		if (in->aux >= tg_count_of(tg_c_rmw_names)) {
+			tg_fail(p, "C output: invalid atomic operation");
+			return;
+		}
+		tg_c_printf(b, "v%u = TYG_ATOMIC_%s_%d(%s", in->dst, tg_c_rmw_names[in->aux], bits, ptr);
+		tg_c_mem(p, b, in->mem);
+		tg_c_printf(b, ", v%u);", in->a);
+		return;
+	case tgOp_AtomicCas:
+		tg_c_printf(b, "{ uint8_t tyg_ok; v%u = TYG_ATOMIC_CAS_%d(%s", in->dst, bits, ptr);
+		tg_c_mem(p, b, in->mem);
+		tg_c_printf(b, ", v%u, v%u, &tyg_ok); v%u = tyg_ok; }", in->a, in->b, in->c);
+		return;
+	}
+}
+
+// Prints a tgOp_X87 as the C compiler's long double, see tgX87Op. T and S are the unsigned
+// and signed C types of the instruction's type.
+TG_INTERNAL void tg_c_x87(tgProc *p, tgBytes *b, tgInstr const *in, char const *T, char const *S) {
+	static char const ops[] = "+-*/";
+	u32 d = in->dst, a = in->a, pb = in->b, c = in->c;
+	p->c_uses |= tgCUse_Ld;
+	switch (in->aux) {
+	case tgX87_Add:
+	case tgX87_Sub:
+	case tgX87_Mul:
+	case tgX87_Div:
+		tg_c_printf(b, "tyg_ld_set(v%u, tyg_ld_get(v%u) %c tyg_ld_get(v%u));", a, pb, ops[in->aux - tgX87_Add], c);
+		return;
+	case tgX87_Neg:    tg_c_printf(b, "tyg_ld_set(v%u, -tyg_ld_get(v%u));", a, pb); return;
+	case tgX87_FromSI: tg_c_printf(b, "tyg_ld_set(v%u, (TYG_F80)(%s)v%u);", a, S, c); return;
+	case tgX87_FromUI:
+	case tgX87_FromF:  tg_c_printf(b, "tyg_ld_set(v%u, (TYG_F80)v%u);", a, c); return;
+	case tgX87_ToSI:   tg_c_printf(b, "v%u = (%s)(%s)tyg_ld_get(v%u);", d, T, S, pb); return;
+	case tgX87_ToUI:
+	case tgX87_ToF:    tg_c_printf(b, "v%u = (%s)tyg_ld_get(v%u);", d, T, pb); return;
+	case tgX87_Cmp:
+		if (in->imm >= tgCond_FEQ && in->imm <= tgCond_FGE) {
+			tg_c_printf(b, "v%u = (uint8_t)(tyg_ld_get(v%u) %s tyg_ld_get(v%u));", d, pb, tg_c_conds[in->imm], c);
+			return;
+		}
+		break;
+	}
+	tg_fail(p, "C output: invalid long double operation");
 }
 
 // Prints one instruction as a statement. `line` and `file` are the last #line's.
@@ -870,6 +1076,53 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	case tgOp_Unreachable: tg_c_puts(b, "TYG_UNREACHABLE();"); break;
 	case tgOp_Trap:        tg_c_puts(b, "TYG_TRAP();"); break;
 	case tgOp_DebugTrap:   tg_c_puts(b, "TYG_DEBUG_TRAP();"); break;
+	case tgOp_AtomicFence:
+		p->c_uses |= tgCUse_Atomics;
+		tg_c_puts(b, "TYG_FENCE();");
+		break;
+	case tgOp_AtomicLoad:
+	case tgOp_AtomicStore:
+	case tgOp_AtomicRmw:
+	case tgOp_AtomicCas:
+		tg_c_atomic(p, b, in, size * 8, amp);
+		break;
+	case tgOp_Sqrt: tg_c_printf(b, "v%u = %s(v%u);", d, t == tgType_F32 ? "sqrtf" : "sqrt", a); break;
+	case tgOp_Bswap:    op = "BSWAP"; goto intrin;
+	case tgOp_Popcount: op = "POPCOUNT"; goto intrin;
+	case tgOp_Ctz:      op = "CTZ"; goto intrin;
+	case tgOp_Clz:      op = "CLZ"; goto intrin;
+	intrin:
+		p->c_uses |= tgCUse_Intrin;
+		tg_c_printf(b, "v%u = (%s)TYG_%s_%d(v%u);", d, T, op, size * 8, a);
+		break;
+	case tgOp_FrameAddress:  op = "FRAME_ADDRESS"; goto addr;
+	case tgOp_ReturnAddress: op = "RETURN_ADDRESS"; goto addr;
+	addr:
+		p->c_uses |= tgCUse_Intrin;
+		tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)TYG_%s();", d, op);
+		break;
+	case tgOp_CpuRelax:
+		p->c_uses |= tgCUse_Intrin;
+		tg_c_puts(b, "TYG_CPU_RELAX();");
+		break;
+	case tgOp_Alloca: {
+		// alloca's memory is aligned to 16; more takes room to round the pointer up
+		long long over = (long long)in->imm - 1;
+		p->c_uses |= tgCUse_Intrin;
+		if (in->imm <= 16) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)TYG_ALLOCA((size_t)v%u);", d, a);
+		else tg_c_printf(b, "v%u = ((uint64_t)(uintptr_t)TYG_ALLOCA((size_t)v%u + %lld) + %lld) & ~(uint64_t)%lld;", d, a, over, over, over);
+		break;
+	}
+	case tgOp_TlsAddr: // not built in C mode, see tg_addr_to_mem
+		tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)&%s;", d, tg_c_sym_name(m, (i32)in->imm).text);
+		break;
+	case tgOp_StackPointer:
+	case tgOp_StackRestore:
+		tg_fail(p, "C output: stack save and restore are not supported");
+		break;
+	case tgOp_X87:
+		tg_c_x87(p, b, in, T, S);
+		break;
 	default:
 		tg_c_unsupported(p, in->op);
 		break;
@@ -924,7 +1177,10 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		for (isize ii = 0; ii < blk->instrs.count; ii++) tg_c_instr(p, &b, &blk->instrs.data[ii], &line, &file);
 	}
 	tg_c_puts(&b, "}\n");
-	if (p->fail_reason == NULL) tg_array_add_elems(&m->c_procs, b.data, b.count);
+	if (p->fail_reason == NULL) {
+		tg_array_add_elems(&m->c_procs, b.data, b.count);
+		m->c_uses |= p->c_uses;
+	}
 	tg_array_free(&b);
 	return p->fail_reason == NULL;
 }
@@ -971,6 +1227,13 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 		tg_c_puts(out, "/* Generated by tinygen. */\n");
 		tg_c_printf(out, "#define TYG_TARGET_%s 1\n#define TYG_TARGET_%s 1\n", archs[m->target.arch], oses[m->target.os]);
 		tg_c_puts(out, tg_c_prelude);
+		if (m->c_uses & tgCUse_Atomics) tg_c_atomics_prelude(out);
+		if (m->c_uses & tgCUse_Intrin) tg_c_puts(out, tg_c_intrin_prelude);
+		if (m->c_uses & tgCUse_Ld) {
+			// the C compiler's long double has the size the module laid it out with
+			tg_c_printf(out, "typedef char tyg_f80_size[sizeof(TYG_F80) == %lld ? 1 : -1];\n", (long long)tyg_type_size(tyg_type_scalar(m, TYG_F80)));
+			tg_c_puts(out, tg_c_ld_prelude);
+		}
 		tg_array_add_elems(out, m->c_types.data, m->c_types.count);
 		if (structs.count > 0) {
 			tg_c_puts(out, "#pragma pack(push, 1)\n");
