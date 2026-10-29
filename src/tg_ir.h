@@ -727,6 +727,7 @@ enum {
 	tgSymbolFlag_Export  = 1<<6, // default visibility, reached through the GOT by a shared object; dllexport on Windows
 	tgSymbolFlag_Undef   = 1<<7, // only from tg_lower_sym_flags: the symbol has no section yet
 	tgSymbolFlag_Protected = 1<<8, // ELF STV_PROTECTED; not in tg_lower_sym_flags
+	tgSymbolFlag_Declared  = 1<<9, // C output: the header text declares it; not in tg_lower_sym_flags
 };
 
 typedef struct tgSymbol {
@@ -940,6 +941,7 @@ struct tyg_module {
 	tgMap              c_type_ids; // record and array tyg_type -> the N of struct tyg_r<N>
 	tgBytes            c_types;    // the definitions of those structs, in dependency order
 	tgBytes            c_procs;    // the procedures' C text
+	tgBytes            c_header;   // tyg_c_header: text printed before everything the module declares
 	u8                 c_uses;     // the tgCUse parts of the prelude the procedures use
 	tgCDtypeArray      c_dts;      // per debug type, see tgCDtype
 	tgBytes            c_dtypes;   // the declarations of the debug types the procedures use, in dependency order

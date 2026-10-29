@@ -175,6 +175,18 @@ nothing but 8 byte slots. Named sections, aliases, common symbols, weak and the
 visibilities become attributes the C compiler decides on. A symbol whose name
 is not a C identifier gets an `asm` label on gcc and clang and a linker
 alternatename pragma on MSVC.
+A host that wants its own headers in the same translation unit calls
+`tyg_c_header(m, text)`: the text is printed verbatim after the prelude and before
+everything tinygen declares, several calls in order (typically
+`#include "runtime.h"`). The symbols that text declares get `TYG_SYM_DECLARED`:
+the C then has no prototype, extern declaration or asm label for them and uses
+their names as they are, so a name that is not a C identifier, or that tinygen
+reserves (keywords, libc and math names, `tyg_*`), makes `tyg_symbol` fail, and
+defining such a symbol in the module fails too. A call passes the arguments
+converted to the types of its `tyg_sig` (a pointer as `void *`, which C converts to
+the header's typed parameters) and casts the result; that the header and the
+`tyg_sig` agree is the host's job. Object output ignores both.
+
 TinyCC takes the gcc branch of the prelude, with fallbacks for what it lacks:
 `abort()` for the traps, byte swaps in C, `<stdatomic.h>` for the atomics, and
 the `asm` label prefixed from `__leading_underscore`. Thread-local data still

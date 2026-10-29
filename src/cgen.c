@@ -377,6 +377,7 @@ TG_INTERNAL tgString tg_c_sym_name(tgModule *m, i32 sym) {
 	tgString *name = &m->c_names.data[sym];
 	if (name->len == 0) {
 		*name = m->symbols.data[sym].name;
+		if (m->symbols.data[sym].flags & tgSymbolFlag_Declared) return *name; // checked by tyg_symbol
 		if (!tg_c_name_ok(*name) || tg_strmap_get(&m->c_dnames, *name) != NULL) {
 			char buf[32];
 			snprintf(buf, sizeof(buf), "tyg_s%d", sym);
@@ -384,6 +385,21 @@ TG_INTERNAL tgString tg_c_sym_name(tgModule *m, i32 sym) {
 		}
 	}
 	return *name;
+}
+
+// Whether a symbol may be TYG_SYM_DECLARED: with C output, its name must be one the C keeps.
+// Sets the error if not.
+TG_INTERNAL bool tg_c_declared_name_ok(tgModule *m, char const *name) {
+	if (m->target.output != TYG_OUTPUT_C || tg_c_name_ok(tg_str(name))) return true;
+	tg_set_error(m, "TYG_SYM_DECLARED: %s is not a C identifier tinygen keeps (a keyword, a header's name, tyg_*, ...), the header's declaration and the C would disagree", name);
+	return false;
+}
+
+// Fails when the symbol is declared by the header, and so may not be defined here.
+TG_INTERNAL bool tg_c_check_not_declared(tgModule *m, i32 sym, char const *what) {
+	if (m->target.output != TYG_OUTPUT_C || sym < 0 || sym >= m->symbols.count || !(m->symbols.data[sym].flags & tgSymbolFlag_Declared)) return true;
+	tg_set_error(m, "%s: %s is declared by the header, not defined here", what, m->symbols.data[sym].name.text);
+	return false;
 }
 
 // A C string literal of s.
@@ -1117,7 +1133,7 @@ TG_INTERNAL void tg_c_call_expr(tgProc *p, tgBytes *b, tgCall const *call) {
 	tgModule *m = p->m;
 	tyg_sig const *sig = call->c->sig;
 	tyg_type const *rt = sig->ret != NULL ? sig->ret : tyg_type_scalar(m, TYG_VOID);
-	if (call->target_sym >= 0 && tg_c_sig_equal(tg_c_sym_sig(m, call->target_sym), sig)) {
+	if (call->target_sym >= 0 && ((m->symbols.data[call->target_sym].flags & tgSymbolFlag_Declared) || tg_c_sig_equal(tg_c_sym_sig(m, call->target_sym), sig))) {
 		tg_c_puts(b, tg_c_sym_name(m, call->target_sym).text);
 	} else {
 		tgBytes d;
@@ -1677,6 +1693,7 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 	for (i32 i = 0; i < (i32)m->symbols.count && ok; i++) {
 		tgSymbol const *s = &m->symbols.data[i];
 		i32 data = s->alias_of != 0 ? (i32)(tg_alias_target(m, i) - m->symbols.data) : i;
+		if (s->flags & tgSymbolFlag_Declared) continue; // the header declares it
 		if (tg_c_is_func(m, data)) {
 			tg_c_proto(m, &decls, i, NULL);
 		} else {
@@ -1713,6 +1730,7 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 			tg_c_printf(out, "typedef char tyg_f80_size[sizeof(TYG_F80) == %lld ? 1 : -1];\n", (long long)tyg_type_size(tyg_type_scalar(m, TYG_F80)));
 			tg_c_puts(out, tg_c_ld_prelude);
 		}
+		tg_array_add_elems(out, m->c_header.data, m->c_header.count);
 		tg_array_add_elems(out, m->c_types.data, m->c_types.count);
 		if (m->c_dtypes.count > 0) tg_c_puts(out, "/* the debug types */\n");
 		tg_array_add_elems(out, m->c_dtypes.data, m->c_dtypes.count);

@@ -64,6 +64,12 @@ tyg_target tyg_host_target(void);
 
 typedef struct tyg_module tyg_module;
 
+/* C output: appends `text` to the C that is printed verbatim after tinygen's prelude and
+ * before everything the module declares (types, symbols, data, procedures), for example
+ * `#include "runtime.h"`. Calls append in order, each followed by a newline. Pair it with
+ * TYG_SYM_DECLARED for the symbols the text declares. Object output ignores it. */
+void tyg_c_header(tyg_module *m, const char *text);
+
 /* NULL when the target is not supported: x86-64 and arm64 Linux and macOS, and x86-64
  * Windows are. macOS gets Mach-O objects, Linux ELF, Windows COFF. */
 tyg_module *tyg_module_new(tyg_target target, const char *source_name);
@@ -113,6 +119,16 @@ enum {
 	 * this definition. Mach-O has no such visibility and treats it as default, like
 	 * clang; COFF ignores it. TYG_SYM_HIDDEN wins over it. */
 	TYG_SYM_PROTECTED = 1 << 7,
+	/* C output: the text given to tyg_c_header declares this symbol. The C then has no
+	 * prototype, extern declaration or asm label for it, and uses the name as it is, so
+	 * the name must be a C identifier that tinygen does not reserve (keywords, libc and
+	 * math names, tyg_*, TYG_*, names ending in _t, v1, l1, B1, p1, all-uppercase names):
+	 * otherwise tyg_symbol fails. Defining the symbol in this module is an error. Calls
+	 * convert the arguments to the parameter types of the tyg_sig and C converts them to
+	 * the header's parameter types, so `void *` fits any pointer parameter; that the
+	 * header's declaration and the tyg_sig agree is up to the host. Object output ignores
+	 * the flag. */
+	TYG_SYM_DECLARED = 1 << 8,
 };
 
 typedef enum tyg_section {

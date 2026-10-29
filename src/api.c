@@ -76,6 +76,7 @@ void tyg_module_free(tyg_module *m) {
 	tg_map_free(&m->c_type_ids);
 	tg_array_free(&m->c_types);
 	tg_array_free(&m->c_procs);
+	tg_array_free(&m->c_header);
 	tg_array_free(&m->c_dts);
 	tg_array_free(&m->c_dtypes);
 	tg_strmap_free(&m->c_dnames);
@@ -157,6 +158,7 @@ TG_INTERNAL u16 tg_sym_flags_from_public(unsigned flags) {
 	if (flags & TYG_SYM_TLS)     f |= tgSymbolFlag_TLS;
 	if (flags & TYG_SYM_EXPORT)  f |= tgSymbolFlag_Export;
 	if (flags & TYG_SYM_PROTECTED) f |= tgSymbolFlag_Protected;
+	if (flags & TYG_SYM_DECLARED) f |= tgSymbolFlag_Declared;
 	return f;
 }
 
@@ -165,6 +167,7 @@ tyg_sym tyg_symbol(tyg_module *m, const char *name, unsigned flags) {
 		tg_set_error(m, "tyg_symbol: empty name");
 		return TYG_NO_SYM;
 	}
+	if ((flags & TYG_SYM_DECLARED) && !tg_c_declared_name_ok(m, name)) return TYG_NO_SYM;
 	isize count = m->symbols.count;
 	i32 sym = tg_symbol(m, tg_str(name));
 	if (m->symbols.count != count) {
@@ -181,7 +184,14 @@ void tyg_symbol_add_flags(tyg_module *m, tyg_sym sym, unsigned flags) {
 		tg_set_error(m, "tyg_symbol_add_flags: bad symbol %d", sym);
 		return;
 	}
+	if ((flags & TYG_SYM_DECLARED) && !tg_c_declared_name_ok(m, m->symbols.data[sym].name.text)) return;
 	m->symbols.data[sym].flags |= tg_sym_flags_from_public(flags);
+}
+
+void tyg_c_header(tyg_module *m, const char *text) {
+	if (m == NULL || text == NULL) return;
+	tg_array_add_elems(&m->c_header, text, (isize)strlen(text));
+	tg_array_add(&m->c_header, (u8)'\n');
 }
 
 int tyg_data(tyg_module *m, tyg_sym sym, tyg_section section, const void *bytes, int64_t size, int64_t align) {
@@ -189,6 +199,7 @@ int tyg_data(tyg_module *m, tyg_sym sym, tyg_section section, const void *bytes,
 		tg_set_error(m, "tyg_data: bad symbol %d", sym);
 		return 1;
 	}
+	if (!tg_c_check_not_declared(m, sym, "tyg_data")) return 1;
 	if (m->symbols.data[sym].section != tgSection_Undef) {
 		tg_set_error(m, "tyg_data: %s is defined already", m->symbols.data[sym].name.text);
 		return 1;
@@ -255,6 +266,7 @@ TG_INTERNAL bool tg_check_definable(tyg_module *m, tyg_sym sym, char const *what
 		tg_set_error(m, "%s: bad symbol %d", what, sym);
 		return false;
 	}
+	if (!tg_c_check_not_declared(m, sym, what)) return false;
 	tgSymbol const *s = &m->symbols.data[sym];
 	if (s->section != tgSection_Undef || s->alias_of != 0 || s->common_align != 0) {
 		tg_set_error(m, "%s: %s is defined already", what, s->name.text);

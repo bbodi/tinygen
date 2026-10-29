@@ -333,6 +333,25 @@ static void check_debug(void) {
 	EQ(dbg_node(-7), -7 + 1 + 2 - 3 * 7 + 6 + 2 + 5 + 3 + 0xab - 14 + 1000);
 }
 
+// Step 7: what the header text of cgen.c declares. host_inl is the header's static inline in
+// the C output, and this definition for the object, which has no header.
+int64_t host_counter = 5;
+int64_t host_twice(int64_t x) { return 2 * x; }
+double host_mix(void *p, double d) { return *(double *)p * 10 + d; }
+int64_t host_inl(int64_t x) { return x * 3; }
+int64_t hd_twice_inc(int64_t); double hd_mix(void *, double); int64_t hd_counter_add(int64_t);
+void *hd_counter_addr(void); int64_t hd_inline(int64_t);
+
+static void check_host(void) {
+	double d = 1.5;
+	EQ(hd_twice_inc(20), 41);
+	FEQ(hd_mix(&d, 0.25), 15.25);
+	EQ(hd_counter_add(3), 8);
+	EQ(hd_counter_add(-10), -2);
+	CHECK(hd_counter_addr() == (void *)&host_counter && host_counter == -2);
+	EQ(hd_inline(7), 21 + 14);
+}
+
 int main(void) {
 	check_data();
 	check_ops();
@@ -342,6 +361,7 @@ int main(void) {
 	check_atomics();
 	check_intrinsics();
 	check_debug();
+	check_host();
 #ifdef HAVE_LD
 	check_long_double();
 #endif

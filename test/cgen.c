@@ -762,6 +762,81 @@ static void build_debug(void) {
 	check(tyg_proc_end(p));
 }
 
+// Step 7: symbols the header text declares (TYG_SYM_DECLARED). With C output the text is
+// printed after the prelude and no prototype or extern is, with an object it is ignored and
+// they are plain externs; cgen_main.c defines host_twice, host_mix, host_counter and host_inl
+// (the C's host_inl is the header's static inline, the object's is cgen_main.c's).
+//   int64_t hd_twice_inc(int64_t x)        { return host_twice(x) + 1; }
+//   double  hd_mix(void *p, double d)      { return host_mix(p, d); }
+//   int64_t hd_counter_add(int64_t n)      { host_counter += n; return host_counter; }
+//   void   *hd_counter_addr(void)          { return &host_counter; }
+//   int64_t hd_inline(int64_t x)           { return host_inl(x) + host_twice(x); }
+static void build_host(void) {
+	const tyg_type *i64 = ty(TYG_I64), *f64 = ty(TYG_F64), *ptr = tyg_type_ptr(m);
+	tyg_c_header(m, "#include <stdint.h>");
+	tyg_c_header(m, "int64_t host_twice(int64_t); double host_mix(void *p, double d);\n"
+	                "static inline int64_t host_inl(int64_t x) { return x * 3; }");
+	tyg_c_header(m, "extern int64_t host_counter;");
+	unsigned decl = TYG_SYM_DECLARED | TYG_SYM_GLOBAL;
+	tyg_sym twice = tyg_symbol(m, "host_twice", TYG_SYM_FUNC | decl);
+	tyg_sym mix = tyg_symbol(m, "host_mix", TYG_SYM_FUNC | decl);
+	tyg_sym inl = tyg_symbol(m, "host_inl", TYG_SYM_FUNC | decl);
+	tyg_sym counter = tyg_symbol(m, "host_counter", decl);
+	check(twice < 0 || mix < 0 || inl < 0 || counter < 0);
+	tyg_sig *s_ii = sig(i64, i64, NULL, NULL, 0);
+	tyg_proc *p = begin("hd_twice_inc", TYG_SYM_GLOBAL, s_ii);
+	tyg_arg a = V(tyg_param(p, 0));
+	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_call(p, s_ii, tyg_direct(twice), &a, 1, NULL, NULL), k64(p, 1)));
+	check(tyg_proc_end(p));
+	p = begin("hd_mix", TYG_SYM_GLOBAL, sig(f64, ptr, f64, NULL, 0));
+	tyg_arg as[2] = {V(tyg_param(p, 0)), V(tyg_param(p, 1))};
+	tyg_ret(p, tyg_call(p, sig(f64, ptr, f64, NULL, 0), tyg_direct(mix), as, 2, NULL, NULL));
+	check(tyg_proc_end(p));
+	p = begin("hd_counter_add", TYG_SYM_GLOBAL, s_ii);
+	tyg_val c = tyg_load(p, TYG_I64, tyg_at_sym(counter, 0), 0);
+	tyg_store(p, TYG_I64, tyg_at_sym(counter, 0), tyg_bin(p, TYG_ADD, c, tyg_param(p, 0)), 0);
+	tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_sym(counter, 0), 0));
+	check(tyg_proc_end(p));
+	p = begin("hd_counter_addr", TYG_SYM_GLOBAL, sig(ptr, NULL, NULL, NULL, 0));
+	tyg_ret(p, tyg_addr_of(p, tyg_at_sym(counter, 0)));
+	check(tyg_proc_end(p));
+	p = begin("hd_inline", TYG_SYM_GLOBAL, s_ii);
+	a = V(tyg_param(p, 0));
+	tyg_val r1 = tyg_call(p, s_ii, tyg_direct(inl), &a, 1, NULL, NULL);
+	tyg_val r2 = tyg_call(p, s_ii, tyg_direct(twice), &a, 1, NULL, NULL);
+	tyg_ret(p, tyg_bin(p, TYG_ADD, r1, r2));
+	check(tyg_proc_end(p));
+}
+
+// The errors of TYG_SYM_DECLARED, in a module of their own; object output ignores the flag.
+static void check_declared_errors(tyg_target t) {
+	tyg_module *e = tyg_module_new(t, "declared.tg");
+	static const char *const bad[] = {"has.dot", "memcpy", "while", "tyg_x", "sqrtf", "1abc", "v12"};
+	for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		tyg_sym s = tyg_symbol(e, bad[i], TYG_SYM_FUNC | TYG_SYM_DECLARED);
+		if (t.output == TYG_OUTPUT_C ? (s != TYG_NO_SYM || tyg_error(e) == NULL || strstr(tyg_error(e), "TYG_SYM_DECLARED") == NULL) : s < 0) {
+			fprintf(stderr, "cgen.c: DECLARED %s: %s\n", bad[i], tyg_error(e) ? tyg_error(e) : "no error");
+			exit(1);
+		}
+	}
+	tyg_module_free(e);
+	if (t.output != TYG_OUTPUT_C) return;
+	e = tyg_module_new(t, "declared.tg");
+	tyg_sym f = tyg_symbol(e, "host_f", TYG_SYM_FUNC | TYG_SYM_DECLARED);
+	tyg_sym d = tyg_symbol(e, "host_d", TYG_SYM_DECLARED);
+	tyg_sym late = tyg_symbol(e, "host_late", TYG_SYM_FUNC);
+	tyg_symbol_add_flags(e, late, TYG_SYM_DECLARED);
+	const tyg_type *v = tyg_type_scalar(e, TYG_VOID);
+	tyg_sig *s = tyg_sig_new(e, v, NULL, 0, 0);
+	if (tyg_proc_begin(e, f, s) != NULL || strstr(tyg_error(e), "declared by the header, not defined here") == NULL ||
+	    tyg_proc_begin(e, late, s) != NULL || strstr(tyg_error(e), "declared by the header, not defined here") == NULL ||
+	    tyg_data(e, d, TYG_SECTION_BSS, NULL, 8, 8) == 0 || strstr(tyg_error(e), "declared by the header, not defined here") == NULL) {
+		fprintf(stderr, "cgen.c: defining a DECLARED symbol did not fail: %s\n", tyg_error(e) ? tyg_error(e) : "no error");
+		exit(1);
+	}
+	tyg_module_free(e);
+}
+
 int main(int argc, char **argv) {
 	char const *out = argc > 1 ? argv[1] : "cgen-c.c";
 	char const *target = argc > 2 ? argv[2] : "c";
@@ -802,6 +877,8 @@ int main(int argc, char **argv) {
 	build_intrinsics(t.output == TYG_OUTPUT_C);
 	build_alloca();
 	build_debug();
+	build_host();
+	check_declared_errors(t);
 	// arm64 Linux has no native long double yet; cgen_main.c checks none there
 	if (!(t.arch == TYG_ARCH_ARM64 && t.os == TYG_OS_LINUX && t.output == TYG_OUTPUT_OBJECT)) build_long_double();
 	check(tyg_module_write(m, out));
