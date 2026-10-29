@@ -854,7 +854,7 @@ static void build_typed(void) {
 	tyg_copy(p, tyg_at_type(tyg_at_local(l, 0), node), tyg_at_type(tyg_at_val(tyg_param(p, 1), 0), node), 24);
 	tyg_val lb = tyg_load(p, TYG_I64, tyg_at_field(tyg_at_local(l, 0), node, 3), 0);
 	tyg_store(p, TYG_I64, tyg_at_field(tyg_at_local(l, 0), node, 3), tyg_un(p, TYG_NEG, lb), 0);
-	tyg_copy(p, tyg_at_type(tyg_at_val(tyg_param(p, 0), 0), node), tyg_at_local(l, 0), 24);
+	tyg_copy(p, tyg_at_type(tyg_at_val(tyg_param(p, 0), 0), node), tyg_at_type(tyg_at_local(l, 0), node), 24);
 	tyg_ret(p, 0);
 	check(tyg_proc_end(p));
 
@@ -873,16 +873,45 @@ static void build_typed(void) {
 	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_SEXT, TYG_I64, b32), tyg_convert(p, TYG_ZEXT, TYG_I64, fbits)));
 	check(tyg_proc_end(p));
 
+	// the global in a record of its own: struct { struct Node n; } tg_t_glob
 	unsigned char image[24] = {0};
 	int32_t one = 1;
 	int64_t five = 5;
 	memcpy(image, &one, 4);
 	memcpy(image + 16, &five, 8);
+	tyg_field wf = {NULL, 0};
+	wf.type = node;
+	const tyg_type *wrap = tyg_type_record(m, 24, 8, &wf, 1);
 	tyg_sym glob = data("tg_t_glob", TYG_SYM_GLOBAL, TYG_SECTION_DATA, image, 24, 8);
 	p = begin("tg_t_global", TYG_SYM_GLOBAL, sig(i64, i32, NULL, NULL, 0));
-	tyg_val ga = tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I32, tyg_at_field(tyg_at_sym(glob, 0), node, 0), 0), tyg_param(p, 0));
-	tyg_store(p, TYG_I32, tyg_at_field(tyg_at_sym(glob, 0), node, 0), ga, 0);
-	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_SEXT, TYG_I64, ga), tyg_load(p, TYG_I64, tyg_at_field(tyg_at_sym(glob, 0), node, 3), 0)));
+	tyg_addr gn = tyg_at_field(tyg_at_sym(glob, 0), wrap, 0);
+	tyg_val ga = tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I32, tyg_at_field(gn, node, 0), 0), tyg_param(p, 0));
+	tyg_store(p, TYG_I32, tyg_at_field(gn, node, 0), ga, 0);
+	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_SEXT, TYG_I64, ga), tyg_load(p, TYG_I64, tyg_at_field(gn, node, 3), 0)));
+	check(tyg_proc_end(p));
+
+	// struct Outer { int32_t k; struct Node n; struct Node arr[2]; }: int64_t tg_t_path(struct Outer *o, int64_t i)
+	// { o->n.b += o->k; o->arr[i].f = o->arr[1 - i].f * 2; o->arr[0] = o->n; return o->n.b + (int64_t)o->arr[i].f; }
+	// every access a path from Outer; the second index through tyg_at_type on a moved address
+	tyg_field of[3] = {{NULL, 0}, {NULL, 8}, {NULL, 32}};
+	of[0].type = i32; of[1].type = node; of[2].type = tyg_type_array(m, node, 2);
+	const tyg_type *outer = tyg_type_record(m, 80, 8, of, 3);
+	p = begin("tg_t_path", TYG_SYM_GLOBAL, sig(i64, ptr, i64, NULL, 0));
+	tyg_addr o = tyg_at_type(tyg_at_val(tyg_param(p, 0), 0), outer);
+	tyg_val oi = tyg_param(p, 1);
+	tyg_addr nb = tyg_at_field(tyg_at_field(o, outer, 1), node, 3);
+	tyg_val okv = tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_field(o, outer, 0), 0));
+	tyg_store(p, TYG_I64, nb, tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, nb, 0), okv), 0);
+	tyg_addr arr = tyg_at_field(o, outer, 2);
+	tyg_val ei = tyg_bin(p, TYG_ADD, tyg_param(p, 0), tyg_bin(p, TYG_MUL, oi, k64(p, 24)));
+	tyg_val ej = tyg_bin(p, TYG_ADD, tyg_param(p, 0), tyg_bin(p, TYG_MUL, tyg_bin(p, TYG_SUB, k64(p, 1), oi), k64(p, 24)));
+	tyg_addr fi = tyg_at_field(tyg_at_type(tyg_at_val(ei, 32), node), node, 1);
+	tyg_addr fj = tyg_at_field(tyg_at_type(tyg_at_val(ej, 32), node), node, 1);
+	tyg_val fv = tyg_load(p, TYG_F32, fj, 0);
+	tyg_store(p, TYG_F32, fi, tyg_bin(p, TYG_FADD, fv, fv), 0);
+	tyg_copy(p, tyg_at_elem(arr, of[2].type, 0), tyg_at_field(o, outer, 1), 24);
+	tyg_val fr = tyg_convert(p, TYG_FTOSI, TYG_I64, tyg_load(p, TYG_F32, fi, 0));
+	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, nb, 0), fr));
 	check(tyg_proc_end(p));
 }
 

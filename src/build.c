@@ -94,14 +94,53 @@ TG_INTERNAL void tg_fold_address(tgProc *p, u32 *base, i64 *off) {
 	*off = o;
 }
 
+// Typed memory, see tinygen.h. A type found through the current one extends the path,
+// anything else starts a new one, whose outer type is the type itself.
+static void tg_addr_type(tyg_addr *a, tyg_type const *through, tyg_type const *t, i64 off) {
+	if (a->type != NULL && a->type == through) {
+		a->path_offset += off;
+	} else {
+		a->outer = through;
+		a->path_offset = off;
+	}
+	a->type = t;
+}
+
+tyg_addr tyg_at_type(tyg_addr a, const tyg_type *t) {
+	if (t == NULL) {
+		a.type = a.outer = NULL;
+		return a;
+	}
+	if (a.type == t) return a;
+	// the type at the start of the current one keeps the path: a record's first field, an
+	// array's first element, else the type stands alone
+	if (a.type != NULL && a.type->kind == tgT_Array && a.type->elem == t) tg_addr_type(&a, a.type, t, 0);
+	else if (a.type != NULL && a.type->kind == tgT_Record) {
+		i32 k = 0;
+		while (k < a.type->field_count && !(a.type->fields[k].offset == 0 && a.type->fields[k].type == t)) k++;
+		if (k < a.type->field_count) tg_addr_type(&a, a.type, t, 0);
+		else tg_addr_type(&a, t, t, 0);
+	} else tg_addr_type(&a, t, t, 0);
+	return a;
+}
+
 tyg_addr tyg_at_field(tyg_addr a, const tyg_type *record, int field) {
 	if (record == NULL || record->kind != tgT_Record || field < 0 || field >= record->field_count) {
-		a.type = NULL; // not a field: the access stays untyped
+		a.type = a.outer = NULL; // not a field: the access stays untyped
 		return a;
 	}
 	a.offset += record->fields[field].offset;
-	a.type = record;
-	a.field = field;
+	tg_addr_type(&a, record, record->fields[field].type, record->fields[field].offset);
+	return a;
+}
+
+tyg_addr tyg_at_elem(tyg_addr a, const tyg_type *array, int64_t index) {
+	if (array == NULL || array->kind != tgT_Array || index < 0 || index >= array->count) {
+		a.type = a.outer = NULL;
+		return a;
+	}
+	a.offset += index * array->elem->size;
+	tg_addr_type(&a, array, array->elem, index * array->elem->size);
 	return a;
 }
 
@@ -153,7 +192,7 @@ TG_INTERNAL bool tg_addr_to_mem(tgProc *p, tyg_addr a, tgMem *out) {
 		// below 256 bytes the known alignment fits, above it any type is aligned
 		if (a.align < 256) m.align = (u8)a.align;
 	}
-	if (a.type != NULL && tg_is_c_output()) m.tag = tg_c_tag(p->m, a.type, a.field);
+	if (a.type != NULL && tg_is_c_output()) m.tag = tg_c_tag(p->m, a.outer, a.type, a.path_offset);
 	*out = m;
 	return true;
 }

@@ -51,6 +51,8 @@ int64_t tg_rec_sum(struct R, int32_t);
 struct Node { int32_t a; float f; unsigned char *ptr; int64_t b; };
 int64_t tg_t_node(struct Node *, int32_t); void tg_t_copy(struct Node *, const struct Node *); int64_t tg_t_union(int64_t *, int64_t);
 int64_t tg_t_misfit(struct Node *); extern struct Node tg_t_glob; int64_t tg_t_global(int32_t);
+struct Outer { int32_t k; struct Node n; struct Node arr[2]; };
+int64_t tg_t_path(struct Outer *, int64_t);
 
 // Step 3: calls; cc_ext, cc_note and cc_jump are called by the generated code
 struct P { int a, b; };
@@ -226,6 +228,15 @@ static void check_pointers(void) {
 	EQ(tg_t_glob.a, 1);
 	EQ(tg_t_global(2), 3 + 5);
 	EQ(tg_t_glob.a, 3);
+	struct Outer o = {5, {1, 1.5f, tb, 100}, {{2, 3.0f, tb, 200}, {3, 4.0f, tb, 300}}};
+	EQ(tg_t_path(&o, 1), 105 + 6);
+	EQ(o.n.b, 105);
+	CHECK(o.arr[1].f == 6.0f);
+	EQ(o.arr[0].b, 105);
+	CHECK(o.arr[0].f == 1.5f);
+	EQ(tg_t_path(&o, 0), 110 + 1); // arr[0].f became 12, then the copy of n put 1.5 back
+	CHECK(o.arr[0].f == 1.5f);
+	EQ(o.arr[0].b, 110);
 }
 
 static void check_memory(void) {

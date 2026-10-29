@@ -179,13 +179,19 @@ conversion out of range.
 A byte copy may alias every other access, which costs an optimizing compiler
 the hoisting of loads out of loops. A front end that knows the type of the
 memory tags the address with it: `tyg_at_type(a, t)` for a scalar, a pointer or
-a whole record (a `tyg_copy` of its size becomes a struct assignment),
-`tyg_at_field(a, record, k)` for one field, which also adds the field's offset.
-The C then accesses a typed lvalue, `((struct tyg_r3 *)p)->f1`, and the C
-compiler may assume, as C's rules let it, that accesses of different types do
-not alias. The front end tags memory it always accesses as that type; memory
-it reinterprets stays untagged, or is tagged through one record whose fields
-overlap, which the C prints as a union. The native backends ignore the tags.
+a whole record (a `tyg_copy` between two places of that type becomes a struct
+assignment), `tyg_at_field(a, record, k)` for one field and
+`tyg_at_elem(a, array, i)` for one element, which also add the offset. Applied
+to an address already typed as that record or array they extend the path, so
+the C accesses `((struct tyg_r3 *)p)->f1.f0`, and the C compiler may assume, as
+C's rules let it, that accesses of different types do not alias: two paths
+alias only where one's outermost type contains the other's. So a global reached
+through a record of its own stays apart from the same type inside an array,
+which lets a loop over the array keep the global in a register, while a write
+through a pointer to the inner type still aliases it. The front end tags memory
+it always accesses as that type; memory it reinterprets stays untagged, or is
+tagged through one record whose fields overlap, which the C prints as a union.
+The native backends ignore the tags.
 
 Not in the C output: `TYG_STACK_POINTER` and `TYG_STACK_RESTORE` (C cannot move
 the stack pointer; the procedure fails), 4 byte data relocations (C has no

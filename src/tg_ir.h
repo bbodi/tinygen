@@ -161,7 +161,7 @@ enum {
 
 	tgOp_Select,     // dst = a ? b : c
 
-	tgOp_MemCopy,    // copy imm bytes: [a] <- [b], a and b are pointer vregs
+	tgOp_MemCopy,    // copy imm bytes: [a] <- [b], a and b are pointer vregs; C output: mem.tag and c are the tags of [a] and [b]
 	tgOp_MemMove,    // like MemCopy but the ranges may overlap
 	tgOp_MemZero,    // zero imm bytes at mem
 	tgOp_MemCopyDyn, // copy c bytes, c is a vreg
@@ -359,11 +359,14 @@ struct tyg_sig {
 TG_ARRAY(tgSigPtrArray, tyg_sig const *);
 TG_ARRAY(tgTypePtrArray, tyg_type const *);
 
-// A tgMem tag of the C output: the type an access is printed as, or field `field` of
-// record `type` when field >= 0.
+// A tgMem tag of the C output: the access is printed as `type`, found at `offset` in
+// `outer` through its fields (the path), see tg_c_lvalue. The tags of one outer type
+// form a list through `next`.
 typedef struct tgCTag {
+	tyg_type const *outer;
 	tyg_type const *type;
-	i32             field;
+	i64             offset;
+	u32             next;
 } tgCTag;
 TG_ARRAY(tgCTagArray, tgCTag);
 
@@ -952,7 +955,7 @@ struct tyg_module {
 	tgBytes            c_types;    // the definitions of those structs, in dependency order
 	tgMap              c_lane_at;  // record tyg_type -> 1 + its fields' start in c_lanes, when the struct has lanes (a union), else 0
 	tgI32Array         c_lanes;    // per field of such a record, the lane its member sits in
-	tgMap              c_tag_ids;  // tyg_type -> its first tgMem tag: the type itself, then one per field
+	tgMap              c_tag_ids;  // outer tyg_type -> the first of its tgMem tags, see tg_c_tag
 	tgCTagArray        c_tags;     // tag - 1 -> the type and field, see tg_c_tag
 	tgBytes            c_procs;    // the procedures' C text
 	tgBytes            c_header;   // tyg_c_header: text printed before everything the module declares

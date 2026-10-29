@@ -485,7 +485,8 @@ TG_INTERNAL void tg_memcopy(tgProc *p, tgMem dst, tgMem src, i64 size) {
 	i.a = tg_lea_mem(p, dst);
 	i.b = tg_lea_mem(p, src);
 	i.imm = size;
-	i.mem.tag = dst.tag != 0 ? dst.tag : src.tag; // the C output prints a typed assignment
+	i.mem.tag = dst.tag; // the C output prints a typed assignment when both sides are tagged alike
+	i.c = src.tag;
 	tg_emit(p, i);
 }
 

@@ -450,30 +450,59 @@ TG_INTERNAL tyg_sig const *tg_c_sym_sig(tgModule *m, i32 sym) {
 
 TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t);
 
-// The tgMem tag of an access printed as type t, or as field `field` of the record t: the
-// tags of a type are consecutive, the type itself first, then one per field, so one map
-// entry per type finds them all. tg_c_tags(m, tag) gives the pair back.
-TG_INTERNAL u32 tg_c_tag(tgModule *m, tyg_type const *t, i32 field) {
-	i64 *found = tg_map_get(&m->c_tag_ids, (u64)(uintptr_t)t);
-	u32 first;
-	if (found != NULL) first = (u32)*found;
-	else {
-		i32 n = t->kind == tgT_Record ? t->field_count : 0;
-		first = (u32)m->c_tags.count + 1;
-		tg_map_set(&m->c_tag_ids, (u64)(uintptr_t)t, (i64)first);
-		for (i32 k = -1; k < n; k++) {
-			tgCTag tag = {t, k};
-			tg_array_add(&m->c_tags, tag);
-		}
+// The tgMem tag of an access printed as type t at `offset` in `outer`, interned: the
+// tags of one outer type are a list. tg_c_tags(m, tag) gives the tag back.
+TG_INTERNAL u32 tg_c_tag(tgModule *m, tyg_type const *outer, tyg_type const *t, i64 offset) {
+	i64 *found = tg_map_get(&m->c_tag_ids, (u64)(uintptr_t)outer);
+	u32 id = found != NULL ? (u32)*found : 0;
+	tgCTag tag;
+	for (u32 i = id; i != 0; i = m->c_tags.data[i - 1].next) {
+		if (m->c_tags.data[i - 1].type == t && m->c_tags.data[i - 1].offset == offset) return i;
 	}
-	if (field < 0 || t->kind != tgT_Record) return first;
-	return field < t->field_count ? first + 1 + (u32)field : 0;
+	tag.outer = outer;
+	tag.type = t;
+	tag.offset = offset;
+	tag.next = id;
+	tg_array_add(&m->c_tags, tag);
+	tg_map_set(&m->c_tag_ids, (u64)(uintptr_t)outer, (i64)m->c_tags.count);
+	return (u32)m->c_tags.count;
 }
 
 TG_INTERNAL tgCTag tg_c_tags(tgModule *m, u32 tag) {
 	TG_ASSERT(tag >= 1 && tag <= m->c_tags.count);
 	return m->c_tags.data[tag - 1];
 }
+
+// The path from `outer` to the type `t` at `offset` in it, through fields and elements:
+// at each step the field index or the element index, written to steps[0..n); 0 steps when
+// outer is t. Returns the count, or -1 when no such path exists or it is deeper than max.
+TG_INTERNAL int tg_c_path(tyg_type const *outer, i64 offset, tyg_type const *t, i64 *steps, int max) {
+	if (outer == t && offset == 0) return 0;
+	if (max == 0) return -1;
+	if (outer->kind == tgT_Array && outer->elem->size > 0) {
+		i64 i = offset / outer->elem->size;
+		int n;
+		if (i >= outer->count) return -1;
+		n = tg_c_path(outer->elem, offset - i * outer->elem->size, t, steps + 1, max - 1);
+		if (n < 0) return -1;
+		steps[0] = i;
+		return n + 1;
+	}
+	if (outer->kind == tgT_Record) {
+		for (i32 k = 0; k < outer->field_count; k++) {
+			tyg_field const *f = &outer->fields[k];
+			int n;
+			if (offset < f->offset || offset >= f->offset + f->type->size) continue;
+			n = tg_c_path(f->type, offset - f->offset, t, steps + 1, max - 1);
+			if (n < 0) continue; // overlapping fields: another may hold it
+			steps[0] = k;
+			return n + 1;
+		}
+	}
+	return -1;
+}
+
+enum { tgCPathMax = 32 };
 
 // Prints `type name`, or the type alone for an empty name. A record or an array is a
 // struct tyg_r<N>, defined in m->c_types.
@@ -1284,8 +1313,7 @@ TG_INTERNAL void tg_c_pointers(tgProc *p) {
 				break;
 			}
 			case tgOp_Load:
-				make = want[d] || (in->mem.tag != 0 && tg_c_tags(p->m, in->mem.tag).field < 0 ? tg_c_tags(p->m, in->mem.tag).type->kind == tgT_Ptr
-				                                      : in->mem.tag != 0 && tg_c_tags(p->m, in->mem.tag).type->fields[tg_c_tags(p->m, in->mem.tag).field].type->kind == tgT_Ptr);
+				make = want[d] || (in->mem.tag != 0 && tg_c_tags(p->m, in->mem.tag).type->kind == tgT_Ptr);
 				break;
 			case tgOp_Copy:
 				if (want[d]) grew |= tg_c_mark(want, a);
@@ -1335,10 +1363,14 @@ TG_INTERNAL char const *tg_c_voidp(tgProc *p, u32 v, char buf[32]) {
 TG_INTERNAL tyg_type const *tg_c_tag_type(tgModule *m, u32 tag, i64 size, tgType t) {
 	tgCTag ct;
 	tyg_type const *acc;
+	i64 steps[tgCPathMax];
 	if (tag == 0) return NULL;
 	ct = tg_c_tags(m, tag);
-	acc = ct.field < 0 ? ct.type : ct.type->fields[ct.field].type;
+	acc = ct.type;
 	if (acc->size != size || acc->kind == tgT_Void || acc->kind == tgT_F80) return NULL;
+	if (tg_c_path(ct.outer, ct.offset, ct.type, steps, tgCPathMax) < 0) return NULL;
+	// an array reached through a path is a C array member, which cannot be assigned
+	if (acc->kind == tgT_Array && ct.outer != acc) return NULL;
 	if (tg_t_is_scalar(acc)) {
 		if (t == tgType_None) return acc;
 		return tg_type_is_float(tg_t_scalar(acc)) == tg_type_is_float(t) ? acc : NULL;
@@ -1347,35 +1379,51 @@ TG_INTERNAL tyg_type const *tg_c_tag_type(tgModule *m, u32 tag, i64 size, tgType
 }
 
 // Prints the lvalue of the tagged access to the bytes at `addr`, a char * expression:
-// `(*(T *)(addr))` for a type, `((struct tyg_rN *)(addr - offset))->fK` for a field, where
-// the field's offset is subtracted unless `at_record` says addr is the record's already.
-TG_INTERNAL void tg_c_lvalue(tgProc *p, tgBytes *b, u32 tag, char const *addr, isize addr_len, bool at_record) {
+// `(*(T *)(addr))` for a type alone, else `((struct tyg_rN *)(addr - offset))->f1.a[2].f0`
+// along the path from the outer type, where the offset is subtracted unless `at_outer`
+// says addr is the outer type's already. The caller checked the path with tg_c_tag_type.
+TG_INTERNAL void tg_c_lvalue(tgProc *p, tgBytes *b, u32 tag, char const *addr, isize addr_len, bool at_outer) {
 	tgCTag ct = tg_c_tags(p->m, tag);
-	if (ct.field < 0) {
+	i64 steps[tgCPathMax];
+	int n = tg_c_path(ct.outer, ct.offset, ct.type, steps, tgCPathMax);
+	tyg_type const *t = ct.outer;
+	TG_ASSERT(n >= 0);
+	if (n == 0) {
 		tg_c_puts(b, "(*(");
 		tg_c_type_decl(p->m, b, ct.type, "*");
 		tg_c_printf(b, ")(%.*s))", (int)addr_len, addr);
-	} else {
-		i64 off = ct.type->fields[ct.field].offset;
-		i32 n = tg_c_record(p->m, ct.type); // defines the struct, and with it its lanes
-		i64 *lanes = tg_map_get(&p->m->c_lane_at, (u64)(uintptr_t)ct.type);
-		tg_c_printf(b, "((struct tyg_r%d *)(%.*s", n, (int)addr_len, addr);
-		if (off != 0 && !at_record) tg_c_printf(b, " - %lld", (long long)off);
-		tg_c_puts(b, "))->");
-		if (lanes != NULL) tg_c_printf(b, "u.l%d.", p->m->c_lanes.data[*lanes - 1 + ct.field]);
-		tg_c_printf(b, "f%d", ct.field);
+		return;
+	}
+	tg_c_printf(b, "((struct tyg_r%d *)(%.*s", tg_c_record(p->m, ct.outer), (int)addr_len, addr);
+	if (ct.offset != 0 && !at_outer) tg_c_printf(b, " - %lld", (long long)ct.offset);
+	tg_c_puts(b, "))->");
+	for (int i = 0; i < n; i++) {
+		if (t->kind == tgT_Array) {
+			// an array type alone is struct tyg_rN { T a[n]; }; a member keeps its dimensions
+			// behind its name, see tg_c_member: fK[i][j]
+			tg_c_printf(b, "%s[%lld]", i == 0 ? "a" : "", (long long)steps[i]);
+			t = t->elem;
+		} else {
+			i64 *lanes;
+			tg_c_record(p->m, t); // defines the struct, and with it its lanes
+			lanes = tg_map_get(&p->m->c_lane_at, (u64)(uintptr_t)t);
+			if (i > 0) tg_c_puts(b, ".");
+			if (lanes != NULL) tg_c_printf(b, "u.l%d.", p->m->c_lanes.data[*lanes - 1 + steps[i]]);
+			tg_c_printf(b, "f%lld", (long long)steps[i]);
+			t = t->fields[steps[i]].type;
+		}
 	}
 }
 
 TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m);
 
-// Prints the lvalue of the tagged access to m, see tg_c_lvalue: the record's address is
-// the memory operand's less the field's offset.
+// Prints the lvalue of the tagged access to m, see tg_c_lvalue: the outer type's address
+// is the memory operand's less the path's offset.
 TG_INTERNAL void tg_c_mem_lvalue(tgProc *p, tgBytes *b, tgMem m) {
 	tgBytes addr;
 	tgCTag ct = tg_c_tags(p->m, m.tag);
 	memset(&addr, 0, sizeof(addr));
-	if (ct.field >= 0) m.offset -= (i32)ct.type->fields[ct.field].offset;
+	m.offset -= (i32)ct.offset;
 	tg_c_mem(p, &addr, m);
 	tg_c_lvalue(p, b, m.tag, (char const *)addr.data, addr.count, true);
 	tg_array_free(&addr);
@@ -1785,14 +1833,16 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		break;
 	case tgOp_MemCopy:
 	case tgOp_MemMove:
-		if (in->op == tgOp_MemCopy && tg_c_tag_type(p->m, in->mem.tag, in->imm, tgType_None) != NULL) {
-			// a typed copy is an assignment; the ranges of a copy do not overlap
+		if (in->op == tgOp_MemCopy && (acc = tg_c_tag_type(p->m, in->mem.tag, in->imm, tgType_None)) != NULL
+		    && tg_c_tag_type(p->m, c, in->imm, tgType_None) == acc) {
+			// a copy between two places typed alike is an assignment, each side along its own
+			// path; the ranges of a copy do not overlap
 			char ca[32], cb[32];
 			tg_c_charp(p, a, ca);
 			tg_c_charp(p, in->b, cb);
 			tg_c_lvalue(p, b, in->mem.tag, ca, (isize)strlen(ca), false);
 			tg_c_puts(b, " = ");
-			tg_c_lvalue(p, b, in->mem.tag, cb, (isize)strlen(cb), false);
+			tg_c_lvalue(p, b, c, cb, (isize)strlen(cb), false);
 			tg_c_puts(b, ";");
 			break;
 		}

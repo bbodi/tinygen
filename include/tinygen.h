@@ -254,27 +254,36 @@ typedef struct tyg_addr {
 	int32_t       base;   /* a tyg_val, tyg_local or tyg_sym */
 	int64_t       offset;
 	int32_t       align;  /* the known alignment when it is below the type's, else 0 */
-	int32_t       field;  /* see tyg_at_field */
-	const tyg_type *type; /* the C type of the access, or NULL: see "Typed memory" */
+	/* Typed memory, see below: the type accessed, the outermost record it was reached
+	 * through (the type itself when none) and the offset of the access in it. */
+	const tyg_type *type;
+	const tyg_type *outer;
+	int64_t         path_offset;
 } tyg_addr;
 
-static inline tyg_addr tyg_at_val(tyg_val v, int64_t off)     { tyg_addr a = {TYG_ADDR_VAL,   (int32_t)v, off, 0, 0, NULL}; return a; }
-static inline tyg_addr tyg_at_local(tyg_local l, int64_t off) { tyg_addr a = {TYG_ADDR_LOCAL, l, off, 0, 0, NULL}; return a; }
-static inline tyg_addr tyg_at_sym(tyg_sym s, int64_t off)     { tyg_addr a = {TYG_ADDR_SYM,   s, off, 0, 0, NULL}; return a; }
+static inline tyg_addr tyg_at_val(tyg_val v, int64_t off)     { tyg_addr a = {TYG_ADDR_VAL,   (int32_t)v, off, 0, NULL, NULL, 0}; return a; }
+static inline tyg_addr tyg_at_local(tyg_local l, int64_t off) { tyg_addr a = {TYG_ADDR_LOCAL, l, off, 0, NULL, NULL, 0}; return a; }
+static inline tyg_addr tyg_at_sym(tyg_sym s, int64_t off)     { tyg_addr a = {TYG_ADDR_SYM,   s, off, 0, NULL, NULL, 0}; return a; }
 
 /* Typed memory, for the C output. A load, store or copy through a plain address is a copy
  * of bytes in the C, which the C compiler must assume may alias every other access. An
  * address can instead name the C type it is accessed as: tyg_at_type for a scalar, a
  * pointer, or a whole record or array (a tyg_copy of its size becomes a struct assignment),
- * tyg_at_field for one field of a record, which also adds the field's offset. The C then
- * reads and writes a typed lvalue, `((struct tyg_r3 *)p)->f1`, and the C compiler may
- * assume accesses of different types do not alias, as C's rules say. So a front end tags
- * only memory it always accesses as that type; memory it reinterprets stays untagged, or
- * is tagged through one record whose fields overlap, which the C prints as a union. A tag
- * whose type does not fit the access (its size, or float against integer) is ignored, and
- * the native backends ignore all of them. */
-static inline tyg_addr tyg_at_type(tyg_addr a, const tyg_type *t) { a.type = t; a.field = -1; return a; }
+ * tyg_at_field for one field of a record and tyg_at_elem for one element of an array,
+ * which also add the field's or element's offset. Applied to an address already typed as
+ * that record or array they extend the path, so `tyg_at_field(tyg_at_field(a, outer, 1),
+ * inner, 0)` is the C's `((struct tyg_r3 *)p)->f1.f0`. The path matters to the C compiler:
+ * it may assume, as C's rules say, that accesses of different types do not alias, and two
+ * paths alias only where one's outermost type contains the other's; so a global reached
+ * through a record of its own is kept apart from the same type inside an array, while a
+ * write through a pointer to the inner type still aliases it. A front end tags only memory
+ * it always accesses as that type; memory it reinterprets stays untagged, or is tagged
+ * through one record whose fields overlap, which the C prints as a union. A tag whose type
+ * does not fit the access (its size, or float against integer) is ignored, and the native
+ * backends ignore all of them. */
+tyg_addr tyg_at_type(tyg_addr a, const tyg_type *t);
 tyg_addr tyg_at_field(tyg_addr a, const tyg_type *record, int field);
+tyg_addr tyg_at_elem(tyg_addr a, const tyg_type *array, int64_t index);
 
 /* Starts the definition of the function `sym`. One procedure is built at a time. */
 tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig);
