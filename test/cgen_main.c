@@ -42,8 +42,15 @@ int64_t tg_bitcast_f64_i64(double); float tg_bitcast_i32_f32(int32_t); int64_t t
 extern int32_t tg_counter;
 int32_t tg_volatile(int32_t *, int32_t); int64_t tg_mem(const int64_t *); void tg_fill(char *, const char *, int32_t, int64_t);
 int32_t tg_trap_if(int32_t); void tg_store_void(int64_t *, int64_t); char *tg_ptr_add(char *, int64_t);
+int64_t tg_p_back(char *, int64_t); int64_t tg_p_cmp(char *, char *); int64_t tg_p_asint(char *);
+struct Ref { unsigned char *base; int64_t len; };
+int64_t tg_p_loop(struct Ref *);
 struct R { int32_t a; int64_t b; };
 int64_t tg_rec_sum(struct R, int32_t);
+// typed memory
+struct Node { int32_t a; float f; unsigned char *ptr; int64_t b; };
+int64_t tg_t_node(struct Node *, int32_t); void tg_t_copy(struct Node *, const struct Node *); int64_t tg_t_union(int64_t *, int64_t);
+int64_t tg_t_misfit(struct Node *); extern struct Node tg_t_glob; int64_t tg_t_global(int32_t);
 
 // Step 3: calls; cc_ext, cc_note and cc_jump are called by the generated code
 struct P { int a, b; };
@@ -180,6 +187,45 @@ static void check_conversions(void) {
 	FEQ(tg_fconsts(1), -0.0);
 	FEQ(tg_fconsts(2), (double)INFINITY);
 	CHECK(isnan(tg_fconsts(3)));
+}
+
+static void check_pointers(void) {
+	char q[16];
+	for (int i = 0; i < 16; i++) q[i] = (char)(i + 1);
+	EQ(tg_p_back(q, 8), 6 << 16 | 10 << 8 | 9);
+	EQ(tg_p_back(q + 8, -4), 2 << 16 | 6 << 8 | 9);
+	EQ(tg_p_cmp(q + 3, q + 10), -28 + 2);
+	EQ(tg_p_cmp(q + 10, q + 3), 28);
+	EQ(tg_p_cmp(q + 5, q + 5), 1);
+	unsigned char bytes[5] = {1, 2, 3, 254, 255};
+	struct Ref ref = {bytes, 5};
+	EQ(tg_p_loop(&ref), 2 + 3 + 4 + 255 + 0);
+	EQ(bytes[4], 0);
+	EQ(bytes[0], 2);
+	ref.len = 0;
+	EQ(tg_p_loop(&ref), 0);
+	EQ(tg_p_asint(q), (int64_t)(intptr_t)q + 8);
+
+	unsigned char tb[4] = {1, 2, 3, 4};
+	struct Node n = {3, 2.5f, tb, 10}, d;
+	EQ(tg_t_node(&n, 4), 3 + 10 + 2 + 1);
+	EQ(n.a, 7);
+	EQ(n.b, 40);
+	CHECK(n.f == 5.0f);
+	CHECK(n.ptr == tb + 1);
+	memset(&d, 0, sizeof(d));
+	tg_t_copy(&d, &n);
+	EQ(d.a, 7);
+	EQ(d.b, -40);
+	CHECK(d.f == 5.0f);
+	CHECK(d.ptr == tb + 1);
+	int64_t u = 0;
+	EQ(tg_t_union(&u, 0x400000003F800000LL), 0x3F800000LL + 2);
+	EQ(u, 0x400000003F800000LL);
+	EQ(tg_t_misfit(&n), 40 + 0x40A00000LL);
+	EQ(tg_t_glob.a, 1);
+	EQ(tg_t_global(2), 3 + 5);
+	EQ(tg_t_glob.a, 3);
 }
 
 static void check_memory(void) {
@@ -357,6 +403,7 @@ int main(void) {
 	check_ops();
 	check_conversions();
 	check_memory();
+	check_pointers();
 	check_calls();
 	check_atomics();
 	check_intrinsics();

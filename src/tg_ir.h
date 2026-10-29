@@ -81,6 +81,7 @@ typedef struct tgMem {
 	u8         align;  // known alignment when it may be below the type's (packed fields), 0 if natural
 	u32        base;
 	i32        offset;
+	u32        tag;    // C output: the type the access is printed as, see tg_c_tag, 0 for none
 } tgMem;
 
 TG_INTERNAL tgMem tg_mem(tgMemKind kind, u32 base, i32 offset) {
@@ -357,6 +358,14 @@ struct tyg_sig {
 
 TG_ARRAY(tgSigPtrArray, tyg_sig const *);
 TG_ARRAY(tgTypePtrArray, tyg_type const *);
+
+// A tgMem tag of the C output: the type an access is printed as, or field `field` of
+// record `type` when field >= 0.
+typedef struct tgCTag {
+	tyg_type const *type;
+	i32             field;
+} tgCTag;
+TG_ARRAY(tgCTagArray, tgCTag);
 
 ////////////////////////////////////////////////////////////////
 // ABI
@@ -681,6 +690,7 @@ struct tyg_proc {
 	tgTypePtrArray    c_va_types;      // C output: the type of each tgOp_VaArg
 	u8                c_uses;          // C output: the tgCUse parts of the prelude its text uses
 	tgString *        c_names;         // C output, while printing: per local, then per parameter, its source name or empty
+	u8 *              c_ptr;           // C output, while printing: per vreg, whether it is a char *, see tg_c_pointers
 
 	i32                file_id;
 	i32                last_line;
@@ -940,6 +950,10 @@ struct tyg_module {
 	tgStringArray      c_names;    // per symbol: its name in the C, empty until decided
 	tgMap              c_type_ids; // record and array tyg_type -> the N of struct tyg_r<N>
 	tgBytes            c_types;    // the definitions of those structs, in dependency order
+	tgMap              c_lane_at;  // record tyg_type -> 1 + its fields' start in c_lanes, when the struct has lanes (a union), else 0
+	tgI32Array         c_lanes;    // per field of such a record, the lane its member sits in
+	tgMap              c_tag_ids;  // tyg_type -> its first tgMem tag: the type itself, then one per field
+	tgCTagArray        c_tags;     // tag - 1 -> the type and field, see tg_c_tag
 	tgBytes            c_procs;    // the procedures' C text
 	tgBytes            c_header;   // tyg_c_header: text printed before everything the module declares
 	u8                 c_uses;     // the tgCUse parts of the prelude the procedures use

@@ -164,9 +164,28 @@ done in unsigned types so it wraps, shift counts are masked as the lowerings mas
 them, scalar loads and stores go through `memcpy` unless volatile (the
 `TYG_LD`/`TYG_ST` macros; TinyCC gets a direct access instead, it has no
 aliasing rules and calls memcpy), aggregates move through `memcpy` helpers, and a procedure that calls a `TYG_SIG_RETURNS_TWICE`
-function makes its accesses volatile. What the IR leaves undefined stays
+function makes its accesses volatile. The IR has no pointer type, but the C
+declares the values that hold pointers as `char *`, inferred per procedure: a
+Lea, a pointer parameter or call result, and the values used as an address that
+come from a load, a copy, `p + i`, `p - i` or a select of two pointers. Pointer
+arithmetic and loads keep the provenance an optimizing compiler's alias analysis
+needs (an integer cast back to a pointer loses it, and with it the hoisting and
+vectorizing of loops); where a pointer meets an integer it is cast. The memcpy is
+`__builtin_memcpy` on gcc and clang, which `_FORTIFY_SOURCE` does not turn into a
+`__memcpy_chk` call. What the IR leaves undefined stays
 undefined in C too: division by zero, `INT_MIN / -1`, and a float to integer
 conversion out of range.
+
+A byte copy may alias every other access, which costs an optimizing compiler
+the hoisting of loads out of loops. A front end that knows the type of the
+memory tags the address with it: `tyg_at_type(a, t)` for a scalar, a pointer or
+a whole record (a `tyg_copy` of its size becomes a struct assignment),
+`tyg_at_field(a, record, k)` for one field, which also adds the field's offset.
+The C then accesses a typed lvalue, `((struct tyg_r3 *)p)->f1`, and the C
+compiler may assume, as C's rules let it, that accesses of different types do
+not alias. The front end tags memory it always accesses as that type; memory
+it reinterprets stays untagged, or is tagged through one record whose fields
+overlap, which the C prints as a union. The native backends ignore the tags.
 
 Not in the C output: `TYG_STACK_POINTER` and `TYG_STACK_RESTORE` (C cannot move
 the stack pointer; the procedure fails), 4 byte data relocations (C has no

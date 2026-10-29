@@ -640,6 +640,61 @@ static tyg_local dvar(tyg_proc *p, const char *name, const tyg_dtype *t, int64_t
 static tyg_val ld64(tyg_proc *p, tyg_local l, int64_t off) { return tyg_load(p, TYG_I64, tyg_at_local(l, off), 0); }
 static tyg_val add(tyg_proc *p, tyg_val a, tyg_val b) { return tyg_bin(p, TYG_ADD, a, b); }
 
+// Pointers, which the C declares as char * (see tg_c_pointers in cgen.c):
+// int64_t tg_p_back(char *q, int64_t i): q[i - 3] << 16 | (q - -i)[1] << 8 | (i < 0 ? q : q + i)[0]
+// int64_t tg_p_cmp(char *a, char *b): (a - b) * 4 + (a < b) * 2 + (a == b)
+// struct Ref { unsigned char *base; int64_t len; };
+// int64_t tg_p_loop(struct Ref *r): for (i in a local) r->base[i]++, summed, the base reloaded each time
+// int64_t tg_p_asint(char *q): tg_b64_add(q, 8), a pointer passed as an integer
+static void build_pointers(void) {
+	const tyg_type *ptr = tyg_type_ptr(m), *i64 = ty(TYG_I64);
+	tyg_proc *p = begin("tg_p_back", TYG_SYM_GLOBAL, sig(i64, ptr, i64, NULL, 0));
+	tyg_val q = tyg_param(p, 0), i = tyg_param(p, 1);
+	tyg_val r = add(p, q, i);
+	tyg_val x = tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_load(p, TYG_I8, tyg_at_val(r, -3), 0));
+	tyg_val r2 = tyg_bin(p, TYG_SUB, q, tyg_bin(p, TYG_SUB, k64(p, 0), i));
+	tyg_val y = tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_load(p, TYG_I8, tyg_at_val(r2, 1), 0));
+	tyg_val r3 = tyg_select(p, tyg_cmp(p, TYG_SLT, i, k64(p, 0)), q, r);
+	tyg_val z = tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_load(p, TYG_I8, tyg_at_val(r3, 0), 0));
+	tyg_val xy = add(p, tyg_bin(p, TYG_SHL, x, k64(p, 16)), tyg_bin(p, TYG_SHL, y, k64(p, 8)));
+	tyg_ret(p, add(p, xy, z));
+	check(tyg_proc_end(p));
+
+	p = begin("tg_p_cmp", TYG_SYM_GLOBAL, sig(i64, ptr, ptr, NULL, 0));
+	tyg_val a = tyg_param(p, 0), b = tyg_param(p, 1);
+	tyg_val d = tyg_bin(p, TYG_MUL, tyg_bin(p, TYG_SUB, a, b), k64(p, 4));
+	tyg_val lt = tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_cmp(p, TYG_ULT, a, b));
+	tyg_val eq = tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_cmp(p, TYG_EQ, a, b));
+	tyg_ret(p, add(p, add(p, d, tyg_bin(p, TYG_MUL, lt, k64(p, 2))), eq));
+	check(tyg_proc_end(p));
+
+	p = begin("tg_p_loop", TYG_SYM_GLOBAL, sig(i64, ptr, NULL, NULL, 0));
+	tyg_val ref = tyg_param(p, 0);
+	tyg_local li = tyg_local_new(p, 8, 8), ls = tyg_local_new(p, 8, 8);
+	tyg_block head = tyg_block_new(p), body = tyg_block_new(p), done = tyg_block_new(p);
+	tyg_store(p, TYG_I64, tyg_at_local(li, 0), k64(p, 0), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(ls, 0), k64(p, 0), 0);
+	tyg_jump(p, head);
+	tyg_block_set(p, head);
+	i = ld64(p, li, 0);
+	tyg_branch(p, tyg_cmp(p, TYG_SLT, i, tyg_load(p, TYG_I64, tyg_at_val(ref, 8), 0)), body, done);
+	tyg_block_set(p, body);
+	tyg_val e = add(p, tyg_load(p, TYG_I64, tyg_at_val(ref, 0), 0), i);
+	tyg_val e1 = add(p, tyg_load(p, TYG_I8, tyg_at_val(e, 0), 0), tyg_iconst(p, TYG_I8, 1));
+	tyg_store(p, TYG_I8, tyg_at_val(e, 0), e1, 0);
+	tyg_store(p, TYG_I64, tyg_at_local(ls, 0), add(p, ld64(p, ls, 0), tyg_convert(p, TYG_ZEXT, TYG_I64, e1)), 0);
+	tyg_store(p, TYG_I64, tyg_at_local(li, 0), add(p, i, k64(p, 1)), 0);
+	tyg_jump(p, head);
+	tyg_block_set(p, done);
+	tyg_ret(p, ld64(p, ls, 0));
+	check(tyg_proc_end(p));
+
+	p = begin("tg_p_asint", TYG_SYM_GLOBAL, sig(i64, ptr, NULL, NULL, 0));
+	tyg_arg as[2] = {V(tyg_param(p, 0)), V(k64(p, 8))};
+	tyg_ret(p, tyg_call(p, sig(i64, i64, i64, NULL, 0), tyg_direct(tyg_symbol(m, "tg_b64_add", TYG_SYM_FUNC | TYG_SYM_GLOBAL)), as, 2, NULL, NULL));
+	check(tyg_proc_end(p));
+}
+
 // long long dbg_scalars(long long a, int b): `a` a named local, `b` stored to an 8 byte
 // local its 4 byte type does not fill, so the C parameter takes the name; locals named
 // total, int (a keyword), v1 (a value's name), and total again in a nested scope.
@@ -762,6 +817,75 @@ static void build_debug(void) {
 	check(tyg_proc_end(p));
 }
 
+// Typed memory (tyg_at_type, tyg_at_field): struct Node { int32_t a; float f; unsigned char *ptr; int64_t b; }
+// int64_t tg_t_node(struct Node *n, int32_t k) { r = n->a + n->b + (int64_t)n->f + n->ptr[0]; n->a += k; n->b *= k; n->f *= 2; n->ptr += 1; return r; }
+// void tg_t_copy(struct Node *dst, const struct Node *src) { struct Node l = *src; l.b = -l.b; *dst = l; }
+// union U { int32_t i; float f; int64_t l; }: int64_t tg_t_union(int64_t *u, int64_t v) { ((U *)u)->l = v; return ((U *)u)->i + (int64_t)((U *)u)->f * 2; }
+// int64_t tg_t_misfit(struct Node *n): tags that do not fit the access are ignored: n->b read as an
+// int32 tagged with b's type, n->f read as its bits tagged with f's, the sum
+// struct Node tg_t_glob = {1, 0, NULL, 5}; int64_t tg_t_global(int32_t k) { tg_t_glob.a += k; return tg_t_glob.a + tg_t_glob.b; }
+static void build_typed(void) {
+	const tyg_type *ptr = tyg_type_ptr(m), *i32 = tyg_type_int(m, TYG_I32, 1), *i64 = tyg_type_int(m, TYG_I64, 1), *f32 = ty(TYG_F32);
+	tyg_field nf[4] = {{NULL, 0}, {NULL, 4}, {NULL, 8}, {NULL, 16}};
+	nf[0].type = i32; nf[1].type = f32; nf[2].type = ptr; nf[3].type = i64;
+	const tyg_type *node = tyg_type_record(m, 24, 8, nf, 4);
+	tyg_field uf[3] = {{NULL, 0}, {NULL, 0}, {NULL, 0}};
+	uf[0].type = i32; uf[1].type = f32; uf[2].type = i64;
+	const tyg_type *un = tyg_type_record(m, 8, 8, uf, 3);
+
+	tyg_proc *p = begin("tg_t_node", TYG_SYM_GLOBAL, sig(i64, ptr, i32, NULL, 0));
+	tyg_val n = tyg_param(p, 0), k = tyg_param(p, 1);
+	tyg_val a = tyg_load(p, TYG_I32, tyg_at_field(tyg_at_val(n, 0), node, 0), 0);
+	tyg_val f = tyg_load(p, TYG_F32, tyg_at_field(tyg_at_val(n, 0), node, 1), 0);
+	tyg_val q = tyg_load(p, TYG_I64, tyg_at_field(tyg_at_val(n, 0), node, 2), 0);
+	tyg_val b = tyg_load(p, TYG_I64, tyg_at_field(tyg_at_val(n, 0), node, 3), 0);
+	tyg_val r = tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_SEXT, TYG_I64, a), b);
+	r = tyg_bin(p, TYG_ADD, r, tyg_convert(p, TYG_FTOSI, TYG_I64, f));
+	r = tyg_bin(p, TYG_ADD, r, tyg_convert(p, TYG_ZEXT, TYG_I64, tyg_load(p, TYG_I8, tyg_at_val(q, 0), 0)));
+	tyg_store(p, TYG_I32, tyg_at_field(tyg_at_val(n, 0), node, 0), tyg_bin(p, TYG_ADD, a, k), 0);
+	tyg_store(p, TYG_I64, tyg_at_field(tyg_at_val(n, 0), node, 3), tyg_bin(p, TYG_MUL, b, tyg_convert(p, TYG_SEXT, TYG_I64, k)), 0);
+	tyg_store(p, TYG_F32, tyg_at_field(tyg_at_val(n, 0), node, 1), tyg_bin(p, TYG_FADD, f, f), 0);
+	tyg_store(p, TYG_I64, tyg_at_field(tyg_at_val(n, 0), node, 2), tyg_bin(p, TYG_ADD, q, k64(p, 1)), 0);
+	tyg_ret(p, r);
+	check(tyg_proc_end(p));
+
+	p = begin("tg_t_copy", TYG_SYM_GLOBAL, sig(ty(TYG_VOID), ptr, ptr, NULL, 0));
+	tyg_local l = tyg_local_new(p, 24, 8);
+	tyg_copy(p, tyg_at_type(tyg_at_local(l, 0), node), tyg_at_type(tyg_at_val(tyg_param(p, 1), 0), node), 24);
+	tyg_val lb = tyg_load(p, TYG_I64, tyg_at_field(tyg_at_local(l, 0), node, 3), 0);
+	tyg_store(p, TYG_I64, tyg_at_field(tyg_at_local(l, 0), node, 3), tyg_un(p, TYG_NEG, lb), 0);
+	tyg_copy(p, tyg_at_type(tyg_at_val(tyg_param(p, 0), 0), node), tyg_at_local(l, 0), 24);
+	tyg_ret(p, 0);
+	check(tyg_proc_end(p));
+
+	p = begin("tg_t_union", TYG_SYM_GLOBAL, sig(i64, ptr, i64, NULL, 0));
+	tyg_val u = tyg_param(p, 0);
+	tyg_store(p, TYG_I64, tyg_at_field(tyg_at_val(u, 0), un, 2), tyg_param(p, 1), 0);
+	tyg_val ui = tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_field(tyg_at_val(u, 0), un, 0), 0));
+	tyg_val uf32 = tyg_convert(p, TYG_FTOSI, TYG_I64, tyg_load(p, TYG_F32, tyg_at_field(tyg_at_val(u, 0), un, 1), 0));
+	tyg_ret(p, tyg_bin(p, TYG_ADD, ui, tyg_bin(p, TYG_MUL, uf32, k64(p, 2))));
+	check(tyg_proc_end(p));
+
+	p = begin("tg_t_misfit", TYG_SYM_GLOBAL, sig(i64, ptr, NULL, NULL, 0));
+	n = tyg_param(p, 0);
+	tyg_val b32 = tyg_load(p, TYG_I32, tyg_at_field(tyg_at_val(n, 0), node, 3), 0);
+	tyg_val fbits = tyg_load(p, TYG_I32, tyg_at_field(tyg_at_val(n, 0), node, 1), 0);
+	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_SEXT, TYG_I64, b32), tyg_convert(p, TYG_ZEXT, TYG_I64, fbits)));
+	check(tyg_proc_end(p));
+
+	unsigned char image[24] = {0};
+	int32_t one = 1;
+	int64_t five = 5;
+	memcpy(image, &one, 4);
+	memcpy(image + 16, &five, 8);
+	tyg_sym glob = data("tg_t_glob", TYG_SYM_GLOBAL, TYG_SECTION_DATA, image, 24, 8);
+	p = begin("tg_t_global", TYG_SYM_GLOBAL, sig(i64, i32, NULL, NULL, 0));
+	tyg_val ga = tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I32, tyg_at_field(tyg_at_sym(glob, 0), node, 0), 0), tyg_param(p, 0));
+	tyg_store(p, TYG_I32, tyg_at_field(tyg_at_sym(glob, 0), node, 0), ga, 0);
+	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_convert(p, TYG_SEXT, TYG_I64, ga), tyg_load(p, TYG_I64, tyg_at_field(tyg_at_sym(glob, 0), node, 3), 0)));
+	check(tyg_proc_end(p));
+}
+
 // Step 7: symbols the header text declares (TYG_SYM_DECLARED). With C output the text is
 // printed after the prelude and no prototype or extern is, with an object it is ignored and
 // they are plain externs; cgen_main.c defines host_twice, host_mix, host_counter and host_inl
@@ -867,6 +991,8 @@ int main(int argc, char **argv) {
 	build_ops();
 	build_select();
 	build_memory();
+	build_pointers();
+	build_typed();
 	build_misc();
 	build_data();
 	build_calls();

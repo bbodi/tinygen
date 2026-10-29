@@ -75,6 +75,10 @@ void tyg_module_free(tyg_module *m) {
 	tg_array_free(&m->c_names);
 	tg_map_free(&m->c_type_ids);
 	tg_array_free(&m->c_types);
+	tg_map_free(&m->c_lane_at);
+	tg_array_free(&m->c_lanes);
+	tg_map_free(&m->c_tag_ids);
+	tg_array_free(&m->c_tags);
 	tg_array_free(&m->c_procs);
 	tg_array_free(&m->c_header);
 	tg_array_free(&m->c_dts);

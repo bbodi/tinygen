@@ -164,6 +164,12 @@ check_c_names() {
 	for decl in 'struct Bits {' 'struct Bits bits' 'struct Packed'; do
 		! grep -q "$decl" "$1" || fail "cgen C names: '$decl', yet it has no C form"
 	done
+	# typed memory: tagged accesses are typed lvalues, a tagged copy a struct assignment
+	for decl in '^	v[0-9]* = (float)((struct tyg_r[0-9]* \*)(v1))->f1;$' '^	((struct tyg_r[0-9]* \*)(v1))->f3 = (int64_t)v[0-9]*;$' \
+		'^	(\*(struct tyg_r[0-9]* \*)(v[0-9]*)) = (\*(struct tyg_r[0-9]* \*)(v[0-9]*));$' '^	((struct tyg_r[0-9]* \*)(v1))->u.l2.f2 = (int64_t)v2;$' \
+		'^	((struct tyg_r[0-9]* \*)(((char \*)&tg_t_glob)))->f0 = (int32_t)v[0-9]*;$'; do
+		grep -q "$decl" "$1" || fail "cgen typed memory: no line matches $decl"
+	done
 	if $cc -std=c99 -Wall -Wextra -g -O2 -c "$1" -o "$out/cgen-c-g.o" > "$out/cgen-c-g.log" 2>&1 && [ ! -s "$out/cgen-c-g.log" ]; then
 		echo "cgen C names: checked, compiles with -g -O2"
 	else

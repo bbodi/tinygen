@@ -94,6 +94,17 @@ TG_INTERNAL void tg_fold_address(tgProc *p, u32 *base, i64 *off) {
 	*off = o;
 }
 
+tyg_addr tyg_at_field(tyg_addr a, const tyg_type *record, int field) {
+	if (record == NULL || record->kind != tgT_Record || field < 0 || field >= record->field_count) {
+		a.type = NULL; // not a field: the access stays untyped
+		return a;
+	}
+	a.offset += record->fields[field].offset;
+	a.type = record;
+	a.field = field;
+	return a;
+}
+
 TG_INTERNAL bool tg_addr_to_mem(tgProc *p, tyg_addr a, tgMem *out) {
 	tgMem m;
 	if (a.offset < INT32_MIN || a.offset > INT32_MAX) {
@@ -142,6 +153,7 @@ TG_INTERNAL bool tg_addr_to_mem(tgProc *p, tyg_addr a, tgMem *out) {
 		// below 256 bytes the known alignment fits, above it any type is aligned
 		if (a.align < 256) m.align = (u8)a.align;
 	}
+	if (a.type != NULL && tg_is_c_output()) m.tag = tg_c_tag(p->m, a.type, a.field);
 	*out = m;
 	return true;
 }

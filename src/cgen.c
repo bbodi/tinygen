@@ -127,12 +127,19 @@ static char const tg_c_prelude[] =
 	"#define TYG_EXPORT\n"
 	"#define TYG_ALIAS(target)\n"
 	"#endif\n"
+	// the builtin, not the memcpy _FORTIFY_SOURCE makes a __memcpy_chk call, which clang turns
+	// into a move only after its loop vectorizer has given up on the loop holding it
+	"#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)\n"
+	"#define TYG_MEMCPY __builtin_memcpy\n"
+	"#else\n"
+	"#define TYG_MEMCPY memcpy\n"
+	"#endif\n"
 	// scalar loads (LD), stores (ST) and bitcasts (MV) of 1, 2, 4 and 8 bytes: memcpy, which the
 	// compilers turn into plain moves; TinyCC would call it, and has no aliasing rules to break
 	"#if defined(__TINYC__)\n"
 	"#define TYG_LD_(n, dst, p) (*(uint##n##_t *)(dst) = *(uint##n##_t *)(p))\n"
 	"#else\n"
-	"#define TYG_LD_(n, dst, p) ((void)memcpy((dst), (p), (n) / 8))\n"
+	"#define TYG_LD_(n, dst, p) ((void)TYG_MEMCPY((dst), (p), (n) / 8))\n"
 	"#endif\n"
 	"#define TYG_LD8(dst, p) TYG_LD_(8, dst, p)\n"
 	"#define TYG_LD16(dst, p) TYG_LD_(16, dst, p)\n"
@@ -245,11 +252,11 @@ static char const tg_c_intrin_prelude[] =
 // long double through memcpy: the operands are bytes in locals or anywhere else.
 static char const tg_c_ld_prelude[] =
 	"#if defined(__TINYC__)\n"
-	"static TYG_UNUSED TYG_F80 tyg_ld_get(uint64_t p) { return *(TYG_F80 *)(uintptr_t)p; }\n"
-	"static TYG_UNUSED void tyg_ld_set(uint64_t p, TYG_F80 x) { *(TYG_F80 *)(uintptr_t)p = x; }\n"
+	"static TYG_UNUSED TYG_F80 tyg_ld_get(char const *p) { return *(TYG_F80 const *)p; }\n"
+	"static TYG_UNUSED void tyg_ld_set(char *p, TYG_F80 x) { *(TYG_F80 *)p = x; }\n"
 	"#else\n"
-	"static TYG_UNUSED TYG_F80 tyg_ld_get(uint64_t p) { TYG_F80 x; memcpy(&x, (void *)(uintptr_t)p, sizeof(x)); return x; }\n"
-	"static TYG_UNUSED void tyg_ld_set(uint64_t p, TYG_F80 x) { memcpy((void *)(uintptr_t)p, &x, sizeof(x)); }\n"
+	"static TYG_UNUSED TYG_F80 tyg_ld_get(char const *p) { TYG_F80 x; TYG_MEMCPY(&x, p, sizeof(x)); return x; }\n"
+	"static TYG_UNUSED void tyg_ld_set(char *p, TYG_F80 x) { TYG_MEMCPY(p, &x, sizeof(x)); }\n"
 	"#endif\n";
 
 // The names of the tgRmwOp operations in the TYG_ATOMIC_<name>_<bits> macros.
@@ -443,6 +450,31 @@ TG_INTERNAL tyg_sig const *tg_c_sym_sig(tgModule *m, i32 sym) {
 
 TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t);
 
+// The tgMem tag of an access printed as type t, or as field `field` of the record t: the
+// tags of a type are consecutive, the type itself first, then one per field, so one map
+// entry per type finds them all. tg_c_tags(m, tag) gives the pair back.
+TG_INTERNAL u32 tg_c_tag(tgModule *m, tyg_type const *t, i32 field) {
+	i64 *found = tg_map_get(&m->c_tag_ids, (u64)(uintptr_t)t);
+	u32 first;
+	if (found != NULL) first = (u32)*found;
+	else {
+		i32 n = t->kind == tgT_Record ? t->field_count : 0;
+		first = (u32)m->c_tags.count + 1;
+		tg_map_set(&m->c_tag_ids, (u64)(uintptr_t)t, (i64)first);
+		for (i32 k = -1; k < n; k++) {
+			tgCTag tag = {t, k};
+			tg_array_add(&m->c_tags, tag);
+		}
+	}
+	if (field < 0 || t->kind != tgT_Record) return first;
+	return field < t->field_count ? first + 1 + (u32)field : 0;
+}
+
+TG_INTERNAL tgCTag tg_c_tags(tgModule *m, u32 tag) {
+	TG_ASSERT(tag >= 1 && tag <= m->c_tags.count);
+	return m->c_tags.data[tag - 1];
+}
+
 // Prints `type name`, or the type alone for an empty name. A record or an array is a
 // struct tyg_r<N>, defined in m->c_types.
 TG_INTERNAL void tg_c_type_decl(tgModule *m, tgBytes *b, tyg_type const *t, char const *name) {
@@ -544,6 +576,12 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 		if (lanes > 1) tg_c_puts(&b, "} u;\n");
 		tg_c_puts(&b, "};\n");
 		if (!natural) tg_c_puts(&b, "#pragma pack(pop)\n");
+		// typed accesses to a field of a union of lanes need its lane, see tg_c_lvalue
+		if (lanes > 1) {
+			tg_map_set(&m->c_lane_at, (u64)(uintptr_t)t, (i64)m->c_lanes.count + 1);
+			for (i32 k = 0; k < t->field_count; k++) tg_array_add(&m->c_lanes, 0);
+			for (i32 k = 0; k < t->field_count; k++) m->c_lanes.data[m->c_lanes.count - t->field_count + order[k]] = lane[k];
+		}
 		free(order);
 		free(lane);
 		free(lane_end);
@@ -554,8 +592,8 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 	                "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { return *(struct tyg_r%d const *)p; }\n"
 	                "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { *(struct tyg_r%d *)p = x; }\n"
 	                "#else\n", n, n, n, n, n, n);
-	tg_c_printf(&b, "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { struct tyg_r%d x; memcpy(&x, p, sizeof(x)); return x; }\n", n, n, n);
-	tg_c_printf(&b, "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { memcpy(p, &x, sizeof(x)); }\n#endif\n", n, n);
+	tg_c_printf(&b, "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { struct tyg_r%d x; TYG_MEMCPY(&x, p, sizeof(x)); return x; }\n", n, n, n);
+	tg_c_printf(&b, "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { TYG_MEMCPY(p, &x, sizeof(x)); }\n#endif\n", n, n);
 	tg_array_add_elems(&m->c_types, b.data, b.count);
 	tg_array_free(&b);
 	return n;
@@ -1066,7 +1104,8 @@ TG_INTERNAL bool tg_c_data_struct(tgModule *m, tgBytes *types, tgBytes *init, i3
 //
 // tyg_proc_end prints the builder's IR as one C function: every local is a byte array and
 // every vreg a variable, both declared at the top since the blocks are labels that gotos
-// reach. A vreg has an unsigned type, so that arithmetic wraps, and a pointer is a uint64_t.
+// reach. A vreg has an unsigned type, so that arithmetic wraps, and a pointer is a char *,
+// see tg_c_pointers.
 ////////////////////////////////////////////////////////////////
 
 static char const *const tg_c_utypes[tgType_COUNT] = {"void", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "float", "double", "void"};
@@ -1075,12 +1114,282 @@ static char const *const tg_c_itypes[tgType_COUNT] = {"void", "int8_t", "int16_t
 // The C operators of the tgCond conditions, signed or not by the casts around them.
 static char const *const tg_c_conds[] = {"==", "!=", "<", "<=", ">", ">=", "<", "<=", ">", ">=", "==", "!=", "<", "<=", ">", ">="};
 
+////////////////////////////////////////////////////////////////
+// Pointers
+//
+// The IR has no pointer type, a pointer is an I64. The C declares the vregs that hold
+// pointers as char * all the same, since a pointer keeps the provenance the C compiler's
+// alias analysis needs, which a uint64_t cast back to a pointer loses. tg_c_pointers infers
+// them per procedure, to a fixpoint. A vreg is a pointer when its definition makes one: a
+// Lea, an Alloca, a TlsAddr, a va_arg, a parameter or a call result of a pointer type. A
+// vreg used as a pointer, a memory operand's base, a callee, a memcpy operand, is wanted
+// as one, and becomes one when its definition can give it: a load of 8 bytes, which keeps
+// the provenance of the pointer stored there; a Copy of a pointer; an Add of a pointer and
+// an integer, or a Sub of an integer from a pointer; a Select of two pointers. The want
+// goes back through those to the operands, and for an Add or a Sub of two vregs that are
+// not pointers to the one that is not plainly an integer (see tg_c_intish).
+// Where a pointer is used as an integer it is cast, `(uintptr_t)v`, and where an integer
+// is used as a pointer `(char *)(uintptr_t)v`, as before.
+////////////////////////////////////////////////////////////////
+
+// Whether the instruction's result is plainly an integer, never a pointer: computed only
+// from constants and integer operations, or loaded from a local that holds only such.
+TG_INTERNAL bool tg_c_intish(tgInstr const *in, u8 const *intish, u8 const *local_int) {
+	switch (in->op) {
+	case tgOp_IConst:
+	case tgOp_Mul:
+	case tgOp_UDiv:
+	case tgOp_SDiv:
+	case tgOp_URem:
+	case tgOp_SRem:
+	case tgOp_Shl:
+	case tgOp_LShr:
+	case tgOp_AShr:
+	case tgOp_ICmp:
+	case tgOp_FCmp:
+	case tgOp_Zext:
+	case tgOp_Sext:
+	case tgOp_Trunc:
+	case tgOp_FToSI:
+	case tgOp_FToUI:
+	case tgOp_Popcount:
+	case tgOp_Ctz:
+	case tgOp_Clz:
+		return true;
+	case tgOp_Add:
+	case tgOp_Sub:    return intish[in->a] && intish[in->b];
+	case tgOp_Copy:   return intish[in->a];
+	case tgOp_Select: return intish[in->b] && intish[in->c];
+	case tgOp_Load:   return in->mem.kind == tgMem_Local && local_int[in->mem.base];
+	}
+	return false;
+}
+
+// Notes a memory operand: its register base is wanted as a pointer, and a local that is
+// accessed other than by an 8-byte integer load or store holds no integer that
+// tg_c_intish follows.
+TG_INTERNAL void tg_c_mem_use(tgMem const *m, bool int64, u8 *want, u8 *local_int) {
+	if (m->kind == tgMem_Reg) want[m->base] = 1;
+	else if (m->kind == tgMem_Local && !int64) local_int[m->base] = 0;
+}
+
+TG_INTERNAL bool tg_c_mark(u8 *set, u32 v) {
+	if (v == 0 || set[v]) return false;
+	set[v] = 1;
+	return true;
+}
+
+// Sets p->c_ptr, see above.
+TG_INTERNAL void tg_c_pointers(tgProc *p) {
+	isize nv = p->vregs.count + 1, nl = p->locals.count + 1, n = 0;
+	u8 *ptr = tg_alloc_items(u8, nv), *want = tg_alloc_items(u8, nv), *intish = tg_alloc_items(u8, nv);
+	u8 *local_int = tg_alloc_items(u8, nl);
+	memset(local_int, 1, (usize)nl);
+	p->c_ptr = ptr;
+	for (isize bi = 0; bi < p->order.count; bi++) n += p->order.data[bi]->instrs.count;
+	tgInstr const **all = tg_alloc_items(tgInstr const *, n + 1);
+	n = 0;
+	for (isize bi = 0; bi < p->order.count; bi++) {
+		tgBlock const *blk = p->order.data[bi];
+		for (isize ii = 0; ii < blk->instrs.count; ii++) all[n++] = &blk->instrs.data[ii];
+	}
+	// the uses as pointers, and the locals that hold 8-byte integers alone
+	for (isize i = 0; i < n; i++) {
+		tgInstr const *in = all[i];
+		tgType t = in->dst != 0 ? p->vregs.data[in->dst] : in->type;
+		switch (in->op) {
+		case tgOp_Load:
+		case tgOp_Store:
+			tg_c_mem_use(&in->mem, t == tgType_I64, want, local_int);
+			break;
+		case tgOp_Lea:
+		case tgOp_MemZero:
+		case tgOp_AtomicLoad:
+		case tgOp_AtomicStore:
+		case tgOp_AtomicRmw:
+		case tgOp_AtomicCas:
+			tg_c_mem_use(&in->mem, false, want, local_int);
+			break;
+		case tgOp_Call:
+		case tgOp_Ret: {
+			tgCall const *call = &p->calls.data[in->imm];
+			for (isize k = 0; k < call->args.count; k++) {
+				if (call->args.data[k].kind == tgCallArg_StackMem) tg_c_mem_use(&call->args.data[k].mem, false, want, local_int);
+			}
+			for (isize k = 0; k < call->rets.count; k++) tg_c_mem_use(&call->rets.data[k].dst, false, want, local_int);
+			if (in->op == tgOp_Call) tg_c_mark(want, call->target_vreg);
+			break;
+		}
+		case tgOp_MemCopy:
+		case tgOp_MemMove:
+		case tgOp_MemCopyDyn:
+		case tgOp_MemMoveDyn:
+		case tgOp_VaCopy:
+			tg_c_mark(want, in->b);
+			tg_c_mark(want, in->a);
+			break;
+		case tgOp_MemSetDyn:
+		case tgOp_VaStart:
+		case tgOp_VaArg:
+			tg_c_mark(want, in->a);
+			break;
+		case tgOp_X87: // the addresses of the long doubles, see tgX87Op
+			if (in->aux != tgX87_Cmp && in->aux < tgX87_ToSI) tg_c_mark(want, in->a);
+			if (in->aux <= tgX87_Cmp || in->aux >= tgX87_ToSI) tg_c_mark(want, in->b);
+			if (in->aux <= tgX87_Div || in->aux == tgX87_Cmp) tg_c_mark(want, in->c);
+			break;
+		}
+	}
+	// the integers: the vregs given the locals, then the locals that keep them, repeated
+	for (bool again = true; again;) {
+		again = false;
+		memset(intish, 0, (usize)nv);
+		for (bool grew = true; grew;) {
+			grew = false;
+			for (isize i = 0; i < n; i++) {
+				if (all[i]->dst != 0 && !intish[all[i]->dst] && tg_c_intish(all[i], intish, local_int)) grew = intish[all[i]->dst] = 1;
+			}
+		}
+		for (isize i = 0; i < n; i++) {
+			tgInstr const *in = all[i];
+			if (in->op == tgOp_Store && in->mem.kind == tgMem_Local && local_int[in->mem.base] && !intish[in->a]) {
+				local_int[in->mem.base] = 0;
+				again = true;
+			}
+		}
+	}
+	// the pointers
+	for (bool grew = true; grew;) {
+		grew = false;
+		for (isize i = 0; i < n; i++) {
+			tgInstr const *in = all[i];
+			u32 d = in->dst, a = in->a, b = in->b;
+			bool make = false;
+			switch (in->op) {
+			case tgOp_Lea:
+			case tgOp_Alloca:
+			case tgOp_TlsAddr:
+			case tgOp_VaArg:
+				make = true;
+				break;
+			case tgOp_Param: {
+				tyg_type const *pt = p->sig->params[in->imm];
+				make = pt->kind == tgT_Ptr || tg_t_scalar(pt) == tgType_None; // an aggregate's is its address
+				break;
+			}
+			case tgOp_Call: {
+				tgCall const *call = &p->calls.data[in->imm];
+				d = call->result_vreg;
+				make = call->c != NULL && d != 0 && call->c->sig->ret->kind == tgT_Ptr;
+				break;
+			}
+			case tgOp_Load:
+				make = want[d] || (in->mem.tag != 0 && tg_c_tags(p->m, in->mem.tag).field < 0 ? tg_c_tags(p->m, in->mem.tag).type->kind == tgT_Ptr
+				                                      : in->mem.tag != 0 && tg_c_tags(p->m, in->mem.tag).type->fields[tg_c_tags(p->m, in->mem.tag).field].type->kind == tgT_Ptr);
+				break;
+			case tgOp_Copy:
+				if (want[d]) grew |= tg_c_mark(want, a);
+				make = want[d] && ptr[a];
+				break;
+			case tgOp_Add:
+			case tgOp_Sub:
+				if (!want[d]) break;
+				if (ptr[a] ? !ptr[b] : ptr[b] && in->op == tgOp_Add) make = true;
+				else if (!ptr[a] && !ptr[b] && intish[b] && !intish[a]) grew |= tg_c_mark(want, a);
+				else if (!ptr[a] && !ptr[b] && intish[a] && !intish[b] && in->op == tgOp_Add) grew |= tg_c_mark(want, b);
+				break;
+			case tgOp_Select:
+				if (!want[d]) break;
+				grew |= tg_c_mark(want, b);
+				grew |= tg_c_mark(want, in->c);
+				make = ptr[b] && ptr[in->c];
+				break;
+			}
+			if (make && d != 0 && p->vregs.data[d] == tgType_I64) grew |= tg_c_mark(ptr, d);
+		}
+	}
+}
+
+// Prints a vreg as an integer: a pointer converted.
+TG_INTERNAL char const *tg_c_int(tgProc *p, u32 v, char buf[32]) {
+	snprintf(buf, 32, p->c_ptr[v] ? "(uintptr_t)v%u" : "v%u", v);
+	return buf;
+}
+
+// Prints a vreg as a char *: a pointer as it is.
+TG_INTERNAL char const *tg_c_charp(tgProc *p, u32 v, char buf[32]) {
+	snprintf(buf, 32, p->c_ptr[v] ? "v%u" : "(char *)(uintptr_t)v%u", v);
+	return buf;
+}
+
+// Prints a vreg as a void * argument: a pointer as it is.
+TG_INTERNAL char const *tg_c_voidp(tgProc *p, u32 v, char buf[32]) {
+	snprintf(buf, 32, p->c_ptr[v] ? "v%u" : "(void *)(uintptr_t)v%u", v);
+	return buf;
+}
+
+// The C type a tagged access is printed as, when the tag fits an access of `size` bytes
+// and the IR type t (tgType_None for a copy): the tag's type, or its field's. A scalar
+// must be the access's kind, integer or float, and a record or an array needs a copy of
+// its size.
+TG_INTERNAL tyg_type const *tg_c_tag_type(tgModule *m, u32 tag, i64 size, tgType t) {
+	tgCTag ct;
+	tyg_type const *acc;
+	if (tag == 0) return NULL;
+	ct = tg_c_tags(m, tag);
+	acc = ct.field < 0 ? ct.type : ct.type->fields[ct.field].type;
+	if (acc->size != size || acc->kind == tgT_Void || acc->kind == tgT_F80) return NULL;
+	if (tg_t_is_scalar(acc)) {
+		if (t == tgType_None) return acc;
+		return tg_type_is_float(tg_t_scalar(acc)) == tg_type_is_float(t) ? acc : NULL;
+	}
+	return t == tgType_None ? acc : NULL;
+}
+
+// Prints the lvalue of the tagged access to the bytes at `addr`, a char * expression:
+// `(*(T *)(addr))` for a type, `((struct tyg_rN *)(addr - offset))->fK` for a field, where
+// the field's offset is subtracted unless `at_record` says addr is the record's already.
+TG_INTERNAL void tg_c_lvalue(tgProc *p, tgBytes *b, u32 tag, char const *addr, isize addr_len, bool at_record) {
+	tgCTag ct = tg_c_tags(p->m, tag);
+	if (ct.field < 0) {
+		tg_c_puts(b, "(*(");
+		tg_c_type_decl(p->m, b, ct.type, "*");
+		tg_c_printf(b, ")(%.*s))", (int)addr_len, addr);
+	} else {
+		i64 off = ct.type->fields[ct.field].offset;
+		i32 n = tg_c_record(p->m, ct.type); // defines the struct, and with it its lanes
+		i64 *lanes = tg_map_get(&p->m->c_lane_at, (u64)(uintptr_t)ct.type);
+		tg_c_printf(b, "((struct tyg_r%d *)(%.*s", n, (int)addr_len, addr);
+		if (off != 0 && !at_record) tg_c_printf(b, " - %lld", (long long)off);
+		tg_c_puts(b, "))->");
+		if (lanes != NULL) tg_c_printf(b, "u.l%d.", p->m->c_lanes.data[*lanes - 1 + ct.field]);
+		tg_c_printf(b, "f%d", ct.field);
+	}
+}
+
+TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m);
+
+// Prints the lvalue of the tagged access to m, see tg_c_lvalue: the record's address is
+// the memory operand's less the field's offset.
+TG_INTERNAL void tg_c_mem_lvalue(tgProc *p, tgBytes *b, tgMem m) {
+	tgBytes addr;
+	tgCTag ct = tg_c_tags(p->m, m.tag);
+	memset(&addr, 0, sizeof(addr));
+	if (ct.field >= 0) m.offset -= (i32)ct.type->fields[ct.field].offset;
+	tg_c_mem(p, &addr, m);
+	tg_c_lvalue(p, b, m.tag, (char const *)addr.data, addr.count, true);
+	tg_array_free(&addr);
+}
+
 // Prints a memory operand as a char * expression.
 TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m) {
 	char off[32] = "";
 	if (m.offset != 0) snprintf(off, sizeof(off), " %c %lld", m.offset < 0 ? '-' : '+', m.offset < 0 ? -(long long)m.offset : (long long)m.offset);
 	switch (m.kind) {
-	case tgMem_Reg:   tg_c_printf(b, "((char *)(uintptr_t)v%u%s)", m.base, off); return;
+	case tgMem_Reg:
+		if (!p->c_ptr[m.base]) tg_c_printf(b, "((char *)(uintptr_t)v%u%s)", m.base, off);
+		else tg_c_printf(b, m.offset != 0 ? "(v%u%s)" : "v%u%s", m.base, off);
+		return;
 	case tgMem_Local:
 		if (p->c_names[m.base].len > 0) tg_c_printf(b, "((char *)&%s%s)", p->c_names[m.base].text, off);
 		else tg_c_printf(b, "((char *)l%u%s)", m.base, off);
@@ -1106,7 +1415,7 @@ TG_INTERNAL void tg_c_unsupported(tgProc *p, tgOp op) {
 TG_INTERNAL void tg_c_mem_val(tgProc *p, tgBytes *b, tyg_type const *t, tgMem m) {
 	if (t->kind == tgT_F80 || t == &tg_t_f80_apple) {
 		p->c_uses |= tgCUse_Ld;
-		tg_c_puts(b, "tyg_ld_get((uint64_t)(uintptr_t)");
+		tg_c_puts(b, "tyg_ld_get(");
 	} else {
 		tg_c_printf(b, "tyg_r%d_get(", tg_c_record(p->m, t));
 	}
@@ -1119,7 +1428,7 @@ TG_INTERNAL void tg_c_mem_val(tgProc *p, tgBytes *b, tyg_type const *t, tgMem m)
 TG_INTERNAL void tg_c_mem_set_begin(tgProc *p, tgBytes *b, tyg_type const *t, tgMem m) {
 	if (t->kind == tgT_F80 || t == &tg_t_f80_apple) {
 		p->c_uses |= tgCUse_Ld;
-		tg_c_puts(b, "tyg_ld_set((uint64_t)(uintptr_t)");
+		tg_c_puts(b, "tyg_ld_set(");
 	} else {
 		tg_c_printf(b, "tyg_r%d_set(", tg_c_record(p->m, t));
 	}
@@ -1150,15 +1459,17 @@ TG_INTERNAL void tg_c_call_expr(tgProc *p, tgBytes *b, tgCall const *call) {
 	for (isize i = 0; i < call->args.count; i++) {
 		tgCallArg const *a = &call->args.data[i];
 		tyg_type const *t = call->c->values[i].type;
+		char buf[32];
 		if (i > 0) tg_c_puts(b, ", ");
 		if (a->kind == tgCallArg_StackMem) {
 			tg_c_mem_val(p, b, t, a->mem);
 		} else if (t->kind == tgT_Ptr) {
-			tg_c_printf(b, "(void *)(uintptr_t)v%u", a->vreg);
+			tg_c_puts(b, p->c_ptr[a->vreg] ? "(void *)" : "");
+			tg_c_puts(b, tg_c_voidp(p, a->vreg, buf));
 		} else {
 			tg_c_puts(b, "(");
 			tg_c_type_decl(m, b, t, "");
-			tg_c_printf(b, ")v%u", a->vreg);
+			tg_c_printf(b, ")%s", tg_c_int(p, a->vreg, buf));
 		}
 	}
 	tg_c_puts(b, ")");
@@ -1171,7 +1482,9 @@ TG_INTERNAL void tg_c_call(tgProc *p, tgBytes *b, tgCall const *call) {
 		tg_fail(p, "C output: a variadic signature needs a named parameter");
 		return;
 	}
-	if (call->result_vreg != 0 && sig->ret->kind == tgT_Ptr) {
+	if (call->result_vreg != 0 && p->c_ptr[call->result_vreg]) {
+		tg_c_printf(b, "v%u = (char *)", call->result_vreg);
+	} else if (call->result_vreg != 0 && sig->ret->kind == tgT_Ptr) {
 		tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)", call->result_vreg);
 	} else if (call->result_vreg != 0) {
 		tg_c_printf(b, "v%u = (%s)", call->result_vreg, tg_c_utypes[p->vregs.data[call->result_vreg]]);
@@ -1192,6 +1505,8 @@ TG_INTERNAL void tg_c_call(tgProc *p, tgBytes *b, tgCall const *call) {
 TG_INTERNAL void tg_c_ret(tgProc *p, tgBytes *b, tgInstr const *in) {
 	tgCall const *call = &p->calls.data[in->imm];
 	tyg_type const *rt = p->sig->ret;
+	u32 v = call->args.count == 1 ? call->args.data[0].vreg : 0;
+	char buf[32];
 	if (rt == NULL || rt->kind == tgT_Void) {
 		tg_c_puts(b, "return;");
 	} else if (call->args.count == 1 && call->args.data[0].kind == tgCallArg_StackMem) {
@@ -1199,11 +1514,11 @@ TG_INTERNAL void tg_c_ret(tgProc *p, tgBytes *b, tgInstr const *in) {
 		tg_c_mem_val(p, b, rt, call->args.data[0].mem);
 		tg_c_puts(b, ";");
 	} else if (call->args.count == 1 && rt->kind == tgT_Ptr) {
-		tg_c_printf(b, "return (void *)(uintptr_t)v%u;", call->args.data[0].vreg);
+		tg_c_printf(b, p->c_ptr[v] ? "return (void *)v%u;" : "return (void *)(uintptr_t)v%u;", v);
 	} else if (tg_t_is_scalar(rt) || rt->kind == tgT_F80) {
 		tg_c_puts(b, "return (");
 		tg_c_type_decl(p->m, b, rt, "");
-		if (call->args.count == 1) tg_c_printf(b, ")v%u;", call->args.data[0].vreg);
+		if (call->args.count == 1) tg_c_printf(b, ")%s;", tg_c_int(p, v, buf));
 		else tg_c_puts(b, ")0;");
 	} else {
 		tg_c_puts(b, "{ ");
@@ -1220,7 +1535,8 @@ TG_INTERNAL bool tg_c_scalar_bits(i32 size) {
 // Prints an atomic access of `bits` to in->mem, see tg_c_atomics_prelude. A float load
 // goes through an integer.
 TG_INTERNAL void tg_c_atomic(tgProc *p, tgBytes *b, tgInstr const *in, int bits, char const *amp) {
-	char ptr[16];
+	char ptr[16], va[32], vb[32];
+	char const *A = tg_c_int(p, in->a, va), *B = tg_c_int(p, in->b, vb);
 	snprintf(ptr, sizeof(ptr), "(uint%d_t *)", bits);
 	p->c_uses |= tgCUse_Atomics;
 	switch (in->op) {
@@ -1235,7 +1551,7 @@ TG_INTERNAL void tg_c_atomic(tgProc *p, tgBytes *b, tgInstr const *in, int bits,
 	case tgOp_AtomicStore:
 		tg_c_printf(b, "TYG_ATOMIC_STORE_%d(%s", bits, ptr);
 		tg_c_mem(p, b, in->mem);
-		tg_c_printf(b, ", v%u);", in->a);
+		tg_c_printf(b, ", %s);", A);
 		return;
 	case tgOp_AtomicRmw:
 		if (in->aux >= tg_count_of(tg_c_rmw_names)) {
@@ -1244,12 +1560,12 @@ TG_INTERNAL void tg_c_atomic(tgProc *p, tgBytes *b, tgInstr const *in, int bits,
 		}
 		tg_c_printf(b, "v%u = TYG_ATOMIC_%s_%d(%s", in->dst, tg_c_rmw_names[in->aux], bits, ptr);
 		tg_c_mem(p, b, in->mem);
-		tg_c_printf(b, ", v%u);", in->a);
+		tg_c_printf(b, ", %s);", A);
 		return;
 	case tgOp_AtomicCas:
 		tg_c_printf(b, "{ uint8_t tyg_ok; v%u = TYG_ATOMIC_CAS_%d(%s", in->dst, bits, ptr);
 		tg_c_mem(p, b, in->mem);
-		tg_c_printf(b, ", v%u, v%u, &tyg_ok); v%u = tyg_ok; }", in->a, in->b, in->c);
+		tg_c_printf(b, ", %s, %s, &tyg_ok); v%u = tyg_ok; }", A, B, in->c);
 		return;
 	}
 }
@@ -1258,25 +1574,28 @@ TG_INTERNAL void tg_c_atomic(tgProc *p, tgBytes *b, tgInstr const *in, int bits,
 // and signed C types of the instruction's type.
 TG_INTERNAL void tg_c_x87(tgProc *p, tgBytes *b, tgInstr const *in, char const *T, char const *S) {
 	static char const ops[] = "+-*/";
-	u32 d = in->dst, a = in->a, pb = in->b, c = in->c;
+	u32 d = in->dst;
+	char va[32], vb[32], vc[32], vk[32];
+	char const *a = tg_c_charp(p, in->a, va), *pb = tg_c_charp(p, in->b, vb), *c = tg_c_charp(p, in->c, vc);
+	char const *k = tg_c_int(p, in->c, vk); // c, the scalar of the From forms
 	p->c_uses |= tgCUse_Ld;
 	switch (in->aux) {
 	case tgX87_Add:
 	case tgX87_Sub:
 	case tgX87_Mul:
 	case tgX87_Div:
-		tg_c_printf(b, "tyg_ld_set(v%u, tyg_ld_get(v%u) %c tyg_ld_get(v%u));", a, pb, ops[in->aux - tgX87_Add], c);
+		tg_c_printf(b, "tyg_ld_set(%s, tyg_ld_get(%s) %c tyg_ld_get(%s));", a, pb, ops[in->aux - tgX87_Add], c);
 		return;
-	case tgX87_Neg:    tg_c_printf(b, "tyg_ld_set(v%u, -tyg_ld_get(v%u));", a, pb); return;
-	case tgX87_FromSI: tg_c_printf(b, "tyg_ld_set(v%u, (TYG_F80)(%s)v%u);", a, S, c); return;
+	case tgX87_Neg:    tg_c_printf(b, "tyg_ld_set(%s, -tyg_ld_get(%s));", a, pb); return;
+	case tgX87_FromSI: tg_c_printf(b, "tyg_ld_set(%s, (TYG_F80)(%s)%s);", a, S, k); return;
 	case tgX87_FromUI:
-	case tgX87_FromF:  tg_c_printf(b, "tyg_ld_set(v%u, (TYG_F80)v%u);", a, c); return;
-	case tgX87_ToSI:   tg_c_printf(b, "v%u = (%s)(%s)tyg_ld_get(v%u);", d, T, S, pb); return;
+	case tgX87_FromF:  tg_c_printf(b, "tyg_ld_set(%s, (TYG_F80)%s);", a, k); return;
+	case tgX87_ToSI:   tg_c_printf(b, "v%u = (%s)(%s)tyg_ld_get(%s);", d, T, S, pb); return;
 	case tgX87_ToUI:
-	case tgX87_ToF:    tg_c_printf(b, "v%u = (%s)tyg_ld_get(v%u);", d, T, pb); return;
+	case tgX87_ToF:    tg_c_printf(b, "v%u = (%s)tyg_ld_get(%s);", d, T, pb); return;
 	case tgX87_Cmp:
 		if (in->imm >= tgCond_FEQ && in->imm <= tgCond_FGE) {
-			tg_c_printf(b, "v%u = (uint8_t)(tyg_ld_get(v%u) %s tyg_ld_get(v%u));", d, pb, tg_c_conds[in->imm], c);
+			tg_c_printf(b, "v%u = (uint8_t)(tyg_ld_get(%s) %s tyg_ld_get(%s));", d, pb, tg_c_conds[in->imm], c);
 			return;
 		}
 		break;
@@ -1293,9 +1612,13 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	// what a narrow value computes in, unsigned: uint16_t * uint16_t is an int that overflows
 	char const *W = size == 8 ? "uint64_t" : "uint32_t", *SW = size == 8 ? "int64_t" : "int32_t";
 	char const *op = NULL;
+	tyg_type const *acc; // the C type of a typed load or store, see tg_c_tag_type
 	u32 d = in->dst, a = in->a, c = in->c;
 	unsigned shift_mask = size == 8 ? 63 : 31; // the x86 shifts, see tg_fold_shift
 	char const *amp = p->c_returns_twice ? "(void *)&" : "&"; // memcpy of a volatile vreg
+	// the operands as integers, and as void * arguments
+	char ia[32], ib[32], ic[32], pa[32], pb[32];
+	char const *A = tg_c_int(p, a, ia), *B = tg_c_int(p, in->b, ib), *C = tg_c_int(p, c, ic);
 	switch (in->op) {
 	case tgOp_Nop:
 	case tgOp_Scope:
@@ -1316,7 +1639,8 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		tyg_type const *pt = p->sig->params[in->imm];
 		char buf[16];
 		char const *name = tg_c_param_name(p, (i32)in->imm, buf);
-		if (tg_t_scalar(pt) == tgType_None) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)&%s;", d, name);
+		if (p->c_ptr[d]) tg_c_printf(b, tg_t_scalar(pt) == tgType_None ? "v%u = (char *)&%s;" : "v%u = (char *)%s;", d, name);
+		else if (tg_t_scalar(pt) == tgType_None) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)&%s;", d, name);
 		else if (pt->kind == tgT_Ptr) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)%s;", d, name);
 		else tg_c_printf(b, "v%u = (%s)%s;", d, T, name);
 		break;
@@ -1342,15 +1666,23 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		break;
 	}
 	case tgOp_Lea:
-		tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)", d);
+		tg_c_printf(b, p->c_ptr[d] ? "v%u = " : "v%u = (uint64_t)(uintptr_t)", d);
 		tg_c_mem(p, b, in->mem);
 		tg_c_puts(b, ";");
 		break;
 	// after a setjmp returns again only volatile accesses see what changed since its first return
 	case tgOp_Load:
 		if ((in->flags & tgInstrFlag_Volatile) || p->c_returns_twice) {
-			tg_c_printf(b, "v%u = *(volatile %s *)", d, T);
+			if (p->c_ptr[d]) tg_c_printf(b, "v%u = *(char *volatile *)", d);
+			else tg_c_printf(b, "v%u = *(volatile %s *)", d, T);
 			tg_c_mem(p, b, in->mem);
+			tg_c_puts(b, ";");
+		} else if ((acc = tg_c_tag_type(p->m, in->mem.tag, size, t)) != NULL) {
+			// a typed access: the vreg's unsigned type from the C type, a pointer as one
+			if (p->c_ptr[d]) tg_c_printf(b, acc->kind == tgT_Ptr ? "v%u = (char *)" : "v%u = (char *)(uintptr_t)", d);
+			else if (acc->kind == tgT_Ptr) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)", d);
+			else tg_c_printf(b, "v%u = (%s)", d, T);
+			tg_c_mem_lvalue(p, b, in->mem);
 			tg_c_puts(b, ";");
 		} else {
 			if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_LD%d(&v%u, ", size * 8, d);
@@ -1362,9 +1694,15 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		break;
 	case tgOp_Store:
 		if ((in->flags & tgInstrFlag_Volatile) || p->c_returns_twice) {
-			tg_c_printf(b, "*(volatile %s *)", T);
+			tg_c_puts(b, p->c_ptr[a] ? "*(char *volatile *)" : "");
+			if (!p->c_ptr[a]) tg_c_printf(b, "*(volatile %s *)", T);
 			tg_c_mem(p, b, in->mem);
 			tg_c_printf(b, " = v%u;", a);
+		} else if ((acc = tg_c_tag_type(p->m, in->mem.tag, size, t)) != NULL) {
+			tg_c_mem_lvalue(p, b, in->mem);
+			if (acc->kind == tgT_Ptr) tg_c_printf(b, p->c_ptr[a] ? " = (void *)v%u;" : " = (void *)(uintptr_t)v%u;", a);
+			else if (acc->kind == tgT_Int) tg_c_printf(b, " = (%s)v%u;", acc->is_signed ? S : T, a);
+			else tg_c_printf(b, " = v%u;", a);
 		} else {
 			if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_ST%d(", size * 8);
 			else tg_c_puts(b, "memcpy(");
@@ -1373,7 +1711,10 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			else tg_c_printf(b, ", &v%u, %d);", a, size);
 		}
 		break;
-	case tgOp_Copy: tg_c_printf(b, "v%u = v%u;", d, a); break;
+	case tgOp_Copy:
+		if (p->c_ptr[d]) tg_c_printf(b, "v%u = v%u;", d, a); // a pointer from a pointer
+		else tg_c_printf(b, "v%u = %s;", d, A);
+		break;
 	case tgOp_Add: op = "+"; goto wrap;
 	case tgOp_Sub: op = "-"; goto wrap;
 	case tgOp_Mul: op = "*"; goto wrap;
@@ -1381,21 +1722,27 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	case tgOp_Or:  op = "|"; goto wrap;
 	case tgOp_Xor: op = "^"; goto wrap;
 	wrap:
-		tg_c_printf(b, "v%u = (%s)((%s)v%u %s (%s)v%u);", d, T, W, a, op, W, in->b);
+		if (p->c_ptr[d]) {
+			// a pointer and an offset, which wraps like the integer does: two's complement
+			u32 base = p->c_ptr[a] ? a : in->b;
+			tg_c_printf(b, "v%u = v%u %s (int64_t)%s;", d, base, op, base == a ? B : A);
+		} else {
+			tg_c_printf(b, "v%u = (%s)((%s)%s %s (%s)%s);", d, T, W, A, op, W, B);
+		}
 		break;
-	case tgOp_UDiv: tg_c_printf(b, "v%u = (%s)(v%u / v%u);", d, T, a, in->b); break;
-	case tgOp_URem: tg_c_printf(b, "v%u = (%s)(v%u %% v%u);", d, T, a, in->b); break;
-	case tgOp_SDiv: tg_c_printf(b, "v%u = (%s)((%s)v%u / (%s)v%u);", d, T, S, a, S, in->b); break;
-	case tgOp_SRem: tg_c_printf(b, "v%u = (%s)((%s)v%u %% (%s)v%u);", d, T, S, a, S, in->b); break;
-	case tgOp_Shl:  tg_c_printf(b, "v%u = (%s)((%s)v%u << (v%u & %u));", d, T, W, a, in->b, shift_mask); break;
-	case tgOp_LShr: tg_c_printf(b, "v%u = (%s)((%s)v%u >> (v%u & %u));", d, T, W, a, in->b, shift_mask); break;
-	case tgOp_AShr: tg_c_printf(b, "v%u = (%s)((%s)(%s)v%u >> (v%u & %u));", d, T, SW, S, a, in->b, shift_mask); break;
+	case tgOp_UDiv: tg_c_printf(b, "v%u = (%s)(%s / %s);", d, T, A, B); break;
+	case tgOp_URem: tg_c_printf(b, "v%u = (%s)(%s %% %s);", d, T, A, B); break;
+	case tgOp_SDiv: tg_c_printf(b, "v%u = (%s)((%s)%s / (%s)%s);", d, T, S, A, S, B); break;
+	case tgOp_SRem: tg_c_printf(b, "v%u = (%s)((%s)%s %% (%s)%s);", d, T, S, A, S, B); break;
+	case tgOp_Shl:  tg_c_printf(b, "v%u = (%s)((%s)%s << (%s & %u));", d, T, W, A, B, shift_mask); break;
+	case tgOp_LShr: tg_c_printf(b, "v%u = (%s)((%s)%s >> (%s & %u));", d, T, W, A, B, shift_mask); break;
+	case tgOp_AShr: tg_c_printf(b, "v%u = (%s)((%s)(%s)%s >> (%s & %u));", d, T, SW, S, A, B, shift_mask); break;
 	case tgOp_FAdd: tg_c_printf(b, "v%u = v%u + v%u;", d, a, in->b); break;
 	case tgOp_FSub: tg_c_printf(b, "v%u = v%u - v%u;", d, a, in->b); break;
 	case tgOp_FMul: tg_c_printf(b, "v%u = v%u * v%u;", d, a, in->b); break;
 	case tgOp_FDiv: tg_c_printf(b, "v%u = v%u / v%u;", d, a, in->b); break;
-	case tgOp_Neg:  tg_c_printf(b, "v%u = (%s)(0u - v%u);", d, T, a); break;
-	case tgOp_Not:  tg_c_printf(b, "v%u = (%s)~v%u;", d, T, a); break;
+	case tgOp_Neg:  tg_c_printf(b, "v%u = (%s)(0u - %s);", d, T, A); break;
+	case tgOp_Not:  tg_c_printf(b, "v%u = (%s)~%s;", d, T, A); break;
 	case tgOp_FNeg: tg_c_printf(b, "v%u = -v%u;", d, a); break;
 	case tgOp_ICmp:
 	case tgOp_FCmp: {
@@ -1405,12 +1752,16 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			tg_fail(p, "C output: invalid condition");
 			break;
 		}
-		tg_c_printf(b, is_signed ? "v%u = (uint8_t)((%s)v%u %s (%s)v%u);" : "v%u = (uint8_t)(%sv%u %s %sv%u);",
-		            d, cast, a, tg_c_conds[in->aux], cast, in->b);
+		if (p->c_ptr[a] && p->c_ptr[in->b] && in->aux <= tgCond_NE) {
+			tg_c_printf(b, "v%u = (uint8_t)(v%u %s v%u);", d, a, tg_c_conds[in->aux], in->b); // pointers compare as they are
+			break;
+		}
+		tg_c_printf(b, is_signed ? "v%u = (uint8_t)((%s)%s %s (%s)%s);" : "v%u = (uint8_t)(%s%s %s %s%s);",
+		            d, cast, A, tg_c_conds[in->aux], cast, B);
 		break;
 	}
-	case tgOp_Sext:  tg_c_printf(b, "v%u = (%s)(%s)(%s)v%u;", d, T, S, tg_c_itypes[in->aux], a); break;
-	case tgOp_SIToF: tg_c_printf(b, "v%u = (%s)(%s)v%u;", d, T, tg_c_itypes[in->aux], a); break;
+	case tgOp_Sext:  tg_c_printf(b, "v%u = (%s)(%s)(%s)%s;", d, T, S, tg_c_itypes[in->aux], A); break;
+	case tgOp_SIToF: tg_c_printf(b, "v%u = (%s)(%s)%s;", d, T, tg_c_itypes[in->aux], A); break;
 	// through a 32 or 64-bit integer, like the lowerings: out of its range it stays undefined
 	case tgOp_FToSI: tg_c_printf(b, "v%u = (%s)(%s)v%u;", d, T, SW, a); break;
 	case tgOp_FToUI:
@@ -1422,16 +1773,30 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	case tgOp_UIToF:
 	case tgOp_FExt:
 	case tgOp_FTrunc:
-		tg_c_printf(b, "v%u = (%s)v%u;", d, T, a);
+		tg_c_printf(b, "v%u = (%s)%s;", d, T, A);
 		break;
 	case tgOp_Bitcast:
 		if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_MV%d(%sv%u, %sv%u);", size * 8, amp, d, amp, a);
 		else tg_c_printf(b, "memcpy(%sv%u, %sv%u, %d);", amp, d, amp, a, size);
 		break;
-	case tgOp_Select:  tg_c_printf(b, "v%u = v%u ? v%u : v%u;", d, a, in->b, c); break;
+	case tgOp_Select:
+		if (p->c_ptr[d]) tg_c_printf(b, "v%u = %s ? v%u : v%u;", d, A, in->b, c);
+		else tg_c_printf(b, "v%u = %s ? %s : %s;", d, A, B, C);
+		break;
 	case tgOp_MemCopy:
 	case tgOp_MemMove:
-		tg_c_printf(b, "%s((void *)(uintptr_t)v%u, (void *)(uintptr_t)v%u, %lld);", in->op == tgOp_MemCopy ? "memcpy" : "memmove", a, in->b, (long long)in->imm);
+		if (in->op == tgOp_MemCopy && tg_c_tag_type(p->m, in->mem.tag, in->imm, tgType_None) != NULL) {
+			// a typed copy is an assignment; the ranges of a copy do not overlap
+			char ca[32], cb[32];
+			tg_c_charp(p, a, ca);
+			tg_c_charp(p, in->b, cb);
+			tg_c_lvalue(p, b, in->mem.tag, ca, (isize)strlen(ca), false);
+			tg_c_puts(b, " = ");
+			tg_c_lvalue(p, b, in->mem.tag, cb, (isize)strlen(cb), false);
+			tg_c_puts(b, ";");
+			break;
+		}
+		tg_c_printf(b, "%s(%s, %s, %lld);", in->op == tgOp_MemCopy ? "memcpy" : "memmove", tg_c_voidp(p, a, pa), tg_c_voidp(p, in->b, pb), (long long)in->imm);
 		break;
 	case tgOp_MemZero:
 		tg_c_puts(b, "memset(");
@@ -1440,13 +1805,13 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		break;
 	case tgOp_MemCopyDyn:
 	case tgOp_MemMoveDyn:
-		tg_c_printf(b, "%s((void *)(uintptr_t)v%u, (void *)(uintptr_t)v%u, (size_t)v%u);", in->op == tgOp_MemCopyDyn ? "memcpy" : "memmove", a, in->b, c);
+		tg_c_printf(b, "%s(%s, %s, (size_t)%s);", in->op == tgOp_MemCopyDyn ? "memcpy" : "memmove", tg_c_voidp(p, a, pa), tg_c_voidp(p, in->b, pb), C);
 		break;
 	case tgOp_MemSetDyn:
-		tg_c_printf(b, "memset((void *)(uintptr_t)v%u, (int)v%u, (size_t)v%u);", a, in->b, c);
+		tg_c_printf(b, "memset(%s, (int)%s, (size_t)%s);", tg_c_voidp(p, a, pa), B, C);
 		break;
 	case tgOp_Jump:        tg_c_printf(b, "goto B%d;", (int)in->imm); break;
-	case tgOp_Branch:      tg_c_printf(b, "if (v%u) goto B%d; else goto B%u;", a, (int)in->imm, c); break;
+	case tgOp_Branch:      tg_c_printf(b, "if (%s) goto B%d; else goto B%u;", A, (int)in->imm, c); break;
 	case tgOp_Ret:         tg_c_ret(p, b, in); break;
 	case tgOp_Call:
 		if (p->calls.data[in->imm].c == NULL) tg_c_unsupported(p, in->op);
@@ -1471,7 +1836,7 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		tg_c_printf(b, "va_arg(*(va_list *)(uintptr_t)v%u, ", a);
 		if (promoted != NULL) tg_c_puts(b, promoted);
 		else tg_c_type_decl(m, b, vt, "");
-		tg_c_printf(b, "); v%u = (uint64_t)(uintptr_t)&tyg_va%d;", d, (int)in->imm);
+		tg_c_printf(b, p->c_ptr[d] ? "); v%u = (char *)&tyg_va%d;" : "); v%u = (uint64_t)(uintptr_t)&tyg_va%d;", d, (int)in->imm);
 		break;
 	}
 	case tgOp_Unreachable: tg_c_puts(b, "TYG_UNREACHABLE();"); break;
@@ -1494,7 +1859,7 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	case tgOp_Clz:      op = "CLZ"; goto intrin;
 	intrin:
 		p->c_uses |= tgCUse_Intrin;
-		tg_c_printf(b, "v%u = (%s)TYG_%s_%d(v%u);", d, T, op, size * 8, a);
+		tg_c_printf(b, "v%u = (%s)TYG_%s_%d(%s);", d, T, op, size * 8, A);
 		break;
 	case tgOp_FrameAddress:  op = "FRAME_ADDRESS"; goto addr;
 	case tgOp_ReturnAddress: op = "RETURN_ADDRESS"; goto addr;
@@ -1510,12 +1875,14 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		// alloca's memory is aligned to 16; more takes room to round the pointer up
 		long long over = (long long)in->imm - 1;
 		p->c_uses |= tgCUse_Intrin;
-		if (in->imm <= 16) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)TYG_ALLOCA((size_t)v%u);", d, a);
-		else tg_c_printf(b, "v%u = ((uint64_t)(uintptr_t)TYG_ALLOCA((size_t)v%u + %lld) + %lld) & ~(uint64_t)%lld;", d, a, over, over, over);
+		if (p->c_ptr[d] && in->imm <= 16) tg_c_printf(b, "v%u = (char *)TYG_ALLOCA((size_t)%s);", d, A);
+		else if (p->c_ptr[d]) tg_c_printf(b, "v%u = (char *)TYG_ALLOCA((size_t)%s + %lld); v%u += (0u - (uintptr_t)v%u) & %lld;", d, A, over, d, d, over);
+		else if (in->imm <= 16) tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)TYG_ALLOCA((size_t)%s);", d, A);
+		else tg_c_printf(b, "v%u = ((uint64_t)(uintptr_t)TYG_ALLOCA((size_t)%s + %lld) + %lld) & ~(uint64_t)%lld;", d, A, over, over, over);
 		break;
 	}
 	case tgOp_TlsAddr: // not built in C mode, see tg_addr_to_mem
-		tg_c_printf(b, "v%u = (uint64_t)(uintptr_t)&%s;", d, tg_c_sym_name(m, (i32)in->imm).text);
+		tg_c_printf(b, p->c_ptr[d] ? "v%u = (char *)&%s;" : "v%u = (uint64_t)(uintptr_t)&%s;", d, tg_c_sym_name(m, (i32)in->imm).text);
 		break;
 	case tgOp_StackPointer:
 	case tgOp_StackRestore:
@@ -1617,6 +1984,7 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 	tgBytes b;
 	memset(&b, 0, sizeof(b));
 	tg_c_debug_names(p);
+	tg_c_pointers(p);
 	tg_c_proto(m, &b, p->sym, p);
 	tg_c_puts(&b, " {\n");
 	// what changes between a setjmp and its longjmp is lost unless volatile
@@ -1642,7 +2010,8 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 	}
 	for (isize v = 1; v < p->vregs.count; v++) {
 		tgType t = p->vregs.data[v];
-		if (t != tgType_None) tg_c_printf(&b, "\tTYG_UNUSED %s%s v%d;\n", vol, tg_c_utypes[t], (int)v);
+		if (p->c_ptr[v]) tg_c_printf(&b, "\tTYG_UNUSED char *%sv%d;\n", vol, (int)v);
+		else if (t != tgType_None) tg_c_printf(&b, "\tTYG_UNUSED %s%s v%d;\n", vol, tg_c_utypes[t], (int)v);
 	}
 	for (isize i = 0; i < p->c_va_types.count; i++) {
 		char name[32];
