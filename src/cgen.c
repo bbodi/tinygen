@@ -1451,14 +1451,42 @@ TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m) {
 	tg_fail(p, "C output: incoming stack memory is not supported");
 }
 
+// Whether an access's tag, if any, names a scalar as a whole: the access is the same as an
+// untagged one of its size.
+TG_INTERNAL bool tg_c_whole_tag(tgModule *m, u32 tag) {
+	if (tag == 0) return true;
+	tgCTag ct = tg_c_tags(m, tag);
+	return ct.offset == 0 && ct.outer == ct.type && tg_t_is_scalar(ct.type);
+}
+
 // The scalar type of the typed local a load or store of `size` bytes of vreg type t reads or writes
 // whole (tyg_local_typed), or NULL: an integer or pointer for an integer vreg, a float for a float.
 TG_INTERNAL tyg_type const *tg_c_whole_local(tgProc *p, tgMem m, i32 size, tgType t) {
-	if (m.kind != tgMem_Local || m.offset != 0 || m.tag != 0 || p->c_names[m.base].len > 0) return NULL;
+	if (m.kind != tgMem_Local || m.offset != 0 || !tg_c_whole_tag(p->m, m.tag) || p->c_names[m.base].len > 0) return NULL;
 	tyg_type const *lt = p->locals.data[m.base].type;
 	if (lt == NULL || !tg_t_is_scalar(lt) || lt->size != size) return NULL;
 	bool fl = t == tgType_F32 || t == tgType_F64, lfl = lt->kind == tgT_F32 || lt->kind == tgT_F64;
 	return fl == lfl ? lt : NULL;
+}
+
+TG_INTERNAL tyg_dtype const *tg_c_local_dtype(tgProc *p, i32 local);
+
+// The debug type of the named local a load or store of `size` bytes of vreg type t reads or writes
+// whole, as its C variable (`v = f`, `f = (T)v`), or NULL; *kind its scalar kind: tgT_Int, tgT_Ptr
+// or tgT_F64 (a float of either width). A const one stays an access through its address.
+TG_INTERNAL tyg_dtype const *tg_c_whole_named(tgProc *p, tgMem m, i32 size, tgType t, tgTKind *kind) {
+	if (m.kind != tgMem_Local || m.offset != 0 || !tg_c_whole_tag(p->m, m.tag) || p->c_names[m.base].len == 0) return NULL;
+	tyg_dtype const *dt = tg_c_local_dtype(p, (i32)m.base), *s = dt;
+	while (s != NULL && (s->kind == tgDt_Typedef || s->kind == tgDt_Volatile || s->kind == tgDt_Enum)) s = s->target;
+	if (s == NULL || tg_c_dt(p->m, dt)->size != size) return NULL;
+	for (tyg_dtype const *q = dt; q != NULL && q != s; q = q->target)
+		if (q->kind == tgDt_Volatile) return NULL;
+	bool fl = t == tgType_F32 || t == tgType_F64;
+	if (s->kind == tgDt_Pointer) *kind = tgT_Ptr;
+	else if (s->kind == tgDt_Base && s->encoding == TYG_DT_FLOAT) *kind = tgT_F64;
+	else if (s->kind == tgDt_Base) *kind = tgT_Int;
+	else return NULL;   // const, a record, an array
+	return (*kind == tgT_F64) == fl ? dt : NULL;
 }
 
 // Fails the procedure on an op the C output does not print yet.
@@ -1685,6 +1713,8 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	char const *W = size == 8 ? "uint64_t" : "uint32_t", *SW = size == 8 ? "int64_t" : "int32_t";
 	char const *op = NULL;
 	tyg_type const *acc; // the C type of a typed load or store, see tg_c_tag_type
+	tyg_dtype const *ndt; // a named variable's debug type, see tg_c_whole_named
+	tgTKind nk = tgT_Int;
 	u32 d = in->dst, a = in->a, c = in->c;
 	unsigned shift_mask = size == 8 ? 63 : 31; // the x86 shifts, see tg_fold_shift
 	char const *amp = p->c_returns_twice ? "(void *)&" : "&"; // memcpy of a volatile vreg
@@ -1749,6 +1779,12 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			else tg_c_printf(b, "v%u = *(volatile %s *)", d, T);
 			tg_c_mem(p, b, in->mem);
 			tg_c_puts(b, ";");
+		} else if (tg_c_whole_named(p, in->mem, size, t, &nk) != NULL) {
+			// a named variable read whole
+			char const *nm = p->c_names[in->mem.base].text;
+			if (p->c_ptr[d]) tg_c_printf(b, nk == tgT_Ptr ? "v%u = (char *)%s;" : "v%u = (char *)(uintptr_t)%s;", d, nm);
+			else if (nk == tgT_Ptr) tg_c_printf(b, "v%u = (%s)(uintptr_t)%s;", d, T, nm);
+			else tg_c_printf(b, "v%u = (%s)%s;", d, T, nm);
 		} else if ((acc = tg_c_whole_local(p, in->mem, size, t)) != NULL) {
 			// a typed local read whole
 			if (p->c_ptr[d]) tg_c_printf(b, acc->kind == tgT_Ptr ? "v%u = (char *)l%u;" : "v%u = (char *)(uintptr_t)l%u;", d, in->mem.base);
@@ -1775,6 +1811,16 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			if (!p->c_ptr[a]) tg_c_printf(b, "*(volatile %s *)", T);
 			tg_c_mem(p, b, in->mem);
 			tg_c_printf(b, " = v%u;", a);
+		} else if ((ndt = tg_c_whole_named(p, in->mem, size, t, &nk)) != NULL) {
+			// a named variable written whole, converted to its C type
+			tgBytes ct;
+			memset(&ct, 0, sizeof(ct));
+			tg_c_dt_decl(p->m, &ct, ndt, "", false);
+			tg_array_add(&ct, (u8)0);
+			char const *nm = p->c_names[in->mem.base].text;
+			if (nk == tgT_Ptr && !p->c_ptr[a]) tg_c_printf(b, "%s = (%s)(uintptr_t)v%u;", nm, (char const *)ct.data, a);
+			else tg_c_printf(b, "%s = (%s)v%u;", nm, (char const *)ct.data, a);
+			tg_array_free(&ct);
 		} else if ((acc = tg_c_whole_local(p, in->mem, size, t)) != NULL) {
 			// a typed local written whole
 			if (acc->kind == tgT_Ptr) tg_c_printf(b, p->c_ptr[a] ? "l%u = (void *)v%u;" : "l%u = (void *)(uintptr_t)v%u;", in->mem.base, a);
@@ -2061,6 +2107,21 @@ TG_INTERNAL void tg_c_debug_names(tgProc *p) {
 	}
 }
 
+// Whether anything but a store of a whole scalar names the local: a load, its address, a copy.
+TG_INTERNAL bool tg_c_local_read(tgProc *p, i32 local) {
+	for (isize bi = 0; bi < p->order.count; bi++) {
+		tgBlock const *blk = p->order.data[bi];
+		for (isize ii = 0; ii < blk->instrs.count; ii++) {
+			tgInstr const *in = &blk->instrs.data[ii];
+			if (in->mem.kind != tgMem_Local || in->mem.base != (u32)local) continue;
+			if (in->op == tgOp_Store && in->mem.offset == 0 && in->mem.tag == 0) continue;
+			if (in->op == tgOp_Nop || in->op == tgOp_Scope || in->op == tgOp_Loc) continue;
+			return true;
+		}
+	}
+	return false;
+}
+
 // Prints the procedure being ended into m->c_procs, or on failure sets p->fail_reason and
 // leaves m->c_procs as it was. The symbol counts as defined, for the definition's storage.
 TG_INTERNAL bool tg_c_proc(tgProc *p) {
@@ -2096,6 +2157,8 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		tg_c_printf(&d, "%s%s", vol, p->c_names[i].text);
 		tg_array_add(&d, (u8)0);
 		tg_c_puts(&b, "\t");
+		// written whole and never read, where the builder forwarded the values stored to it
+		if (!tg_c_local_read(p, (i32)i)) tg_c_puts(&b, "TYG_UNUSED ");
 		if (align > tg_c_dt(m, t)->align) tg_c_printf(&b, "TYG_ALIGNED(%lld) ", (long long)align);
 		tg_c_dt_decl(m, &b, t, (char const *)d.data, false);
 		tg_c_puts(&b, ";\n");

@@ -154,10 +154,10 @@ run_cgen() {
 # check_c_names file: the debug variables of cgen.c's build_debug are C variables of their
 # debug types, the bitfield and packed records stay byte arrays, and the C compiles with -g.
 check_c_names() {
-	for decl in '^	int64_t total;$' '^	int32_t int_1;$' '^	int64_t v1_1;$' '^	int64_t total_1;$' \
-		'^	_Bool flag;$' '^	i16 small;$' '^int64_t dbg_scalars(int64_t a, int32_t b) {$' '^	int64_t a_1;$' \
-		'^int64_t dbg_point(struct tyg_r[0-9]* pt) {$' '^	struct Node node;$' '^	struct Node \*next;$' \
-		'^	enum Color color;$' '^	int32_t arr\[3\];$' '^	Count count;$' '^typedef int64_t Count;$'; do
+	for decl in '^	\(TYG_UNUSED \)\{0,1\}int64_t total;$' '^	\(TYG_UNUSED \)\{0,1\}int32_t int_1;$' '^	\(TYG_UNUSED \)\{0,1\}int64_t v1_1;$' '^	\(TYG_UNUSED \)\{0,1\}int64_t total_1;$' \
+		'^	\(TYG_UNUSED \)\{0,1\}_Bool flag;$' '^	\(TYG_UNUSED \)\{0,1\}i16 small;$' '^int64_t dbg_scalars(int64_t a, int32_t b) {$' '^	\(TYG_UNUSED \)\{0,1\}int64_t a_1;$' \
+		'^int64_t dbg_point(struct tyg_r[0-9]* pt) {$' '^	\(TYG_UNUSED \)\{0,1\}struct Node node;$' '^	\(TYG_UNUSED \)\{0,1\}struct Node \*next;$' \
+		'^	\(TYG_UNUSED \)\{0,1\}enum Color color;$' '^	\(TYG_UNUSED \)\{0,1\}int32_t arr\[3\];$' '^	\(TYG_UNUSED \)\{0,1\}Count count;$' '^typedef int64_t Count;$'; do
 		grep -q "$decl" "$1" || fail "cgen C names: no line matches $decl"
 	done
 	# a pointer to struct Bits declares it, incomplete
