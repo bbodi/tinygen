@@ -187,6 +187,10 @@ check_c_names() {
 		printf '%s\n' "$body" | grep -qF "$decl" || fail "cgen structured: tg_struct has no '$decl'"
 	done
 	[ "$(printf '%s\n' "$body" | grep -c 'goto ')" = 1 ] || fail "cgen structured: tg_struct has other gotos than the outer break"
+	# no goto to the label right after it
+	! awk '/^\t*goto B[0-9]+;$/ { g = $1 " " $2; sub(/^.*goto /, "", g); sub(/;$/, "", g); next_is = g ":;"; next }
+		next_is != "" && $0 == next_is { found = 1 } { next_is = "" } END { exit !found }' "$1" ||
+		fail "cgen labels: a goto to the label right after it"
 	# tyg_switch: one C switch, its cases and default
 	grep -q '^	switch (.*) { case 0ULL: goto B[0-9]*; case 5ULL: goto B[0-9]*; case 18446744073709551613ULL: goto B[0-9]*; case 9223372036854775808ULL: goto B[0-9]*; default: goto B[0-9]*; }$' "$1" ||
 		fail "cgen switch: no C switch for tg_switch"

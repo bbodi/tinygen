@@ -2411,7 +2411,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	// a goto to the label right after it goes, and a label no goto names any more
 	for (isize li = first; li < nl; li++) {
 		tgCLine *l = &ls[li];
-		if (l->dead || strncmp(l->s, "\tgoto B", 8) != 0) continue;
+		if (l->dead || strncmp(l->s, "\tgoto B", 7) != 0) continue;
 		isize lj = li + 1;
 		while (lj < nl && (ls[lj].dead || ls[lj].n == 0 || strncmp(ls[lj].s, "#line", 5) == 0)) lj++;
 		if (lj < nl && ls[lj].n == l->n - 5 && !memcmp(ls[lj].s, l->s + 6, (usize)(l->n - 7)) &&
