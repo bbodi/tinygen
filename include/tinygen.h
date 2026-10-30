@@ -304,6 +304,10 @@ void tyg_proc_abort(tyg_proc *p);
 int tyg_proc_section(tyg_proc *p, const char *section);
 
 tyg_local tyg_local_new(tyg_proc *p, int64_t size, int64_t align);
+/* A local of type t: tyg_local_new's storage with t's size and alignment, which the C output
+   declares with t's C type; a load or store of the whole local as its scalar prints there as a
+   plain assignment. */
+tyg_local tyg_local_typed(tyg_proc *p, const tyg_type *t);
 
 /* A scalar parameter's value. For an aggregate parameter, the address of the
  * memory that holds it, which the procedure may write. */

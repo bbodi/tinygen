@@ -171,6 +171,11 @@ check_c_names() {
 		'^	((struct tyg_r[0-9]* \*)(v1))->f1.f3 = (int64_t)v[0-9]*;$' '^	((struct tyg_r[0-9]* \*)(v[0-9]* - 32))->f2\[0\] = ((struct tyg_r[0-9]* \*)(v[0-9]* - 8))->f1;$'; do
 		grep -q "$decl" "$1" || fail "cgen typed memory: no line matches $decl"
 	done
+	# typed locals (tyg_local_typed): declared with their C types, read and written whole plainly
+	for decl in '^	TYG_UNUSED TYG_ALIGNED(8) int64_t l[0-9]*;$' '^	TYG_UNUSED TYG_ALIGNED(8) void \*l[0-9]*;$' '^	TYG_UNUSED TYG_ALIGNED(8) double l[0-9]*;$' \
+		'^	TYG_UNUSED TYG_ALIGNED(4) int32_t l[0-9]*;$' '^	l[0-9]* = (int64_t)v[0-9]*;$' '^	v[0-9]* = (uint64_t)l[0-9]*;$' '^	l[0-9]* = (void \*)v[0-9]*;$'; do
+		grep -q "$decl" "$1" || fail "cgen typed locals: no line matches $decl"
+	done
 	# tyg_switch: one C switch, its cases and default
 	grep -q '^	switch (.*) { case 0ULL: goto B[0-9]*; case 5ULL: goto B[0-9]*; case 18446744073709551613ULL: goto B[0-9]*; case 9223372036854775808ULL: goto B[0-9]*; default: goto B[0-9]*; }$' "$1" ||
 		fail "cgen switch: no C switch for tg_switch"

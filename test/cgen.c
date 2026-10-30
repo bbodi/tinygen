@@ -175,6 +175,29 @@ static void build_select(void) {
 		tyg_ret(p, k64(p, -1));
 	}
 	check(tyg_proc_end(p));
+	// int64_t tg_typed_locals(int64_t x, int64_t *q): typed locals of each kind (tyg_local_typed):
+	// i64 a = x; i64 *pq = q; *pq = a + 1; double f = a; int32_t n = x; then a written through its
+	// own address to 7; returns a * 1000 + (int64_t)f + n, the C output assigns them plainly
+	p = begin("tg_typed_locals", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), tyg_type_ptr(m), NULL, 0));
+	{
+		tyg_local la = tyg_local_typed(p, ty(TYG_I64)), lq = tyg_local_typed(p, tyg_type_ptr(m));
+		tyg_local lf = tyg_local_typed(p, ty(TYG_F64)), ln = tyg_local_typed(p, ty(TYG_I32));
+		tyg_val x = tyg_param(p, 0);
+		tyg_store(p, TYG_I64, tyg_at_local(la, 0), x, 0);
+		tyg_store(p, TYG_I64, tyg_at_local(lq, 0), tyg_param(p, 1), 0);
+		tyg_val a = tyg_load(p, TYG_I64, tyg_at_local(la, 0), 0);
+		tyg_val pq = tyg_load(p, TYG_I64, tyg_at_local(lq, 0), 0);
+		tyg_store(p, TYG_I64, tyg_at_val(pq, 0), tyg_bin(p, TYG_ADD, a, k64(p, 1)), 0);
+		tyg_store(p, TYG_F64, tyg_at_local(lf, 0), tyg_convert(p, TYG_SITOF, TYG_F64, a), 0);
+		tyg_store(p, TYG_I32, tyg_at_local(ln, 0), tyg_convert(p, TYG_TRUNC, TYG_I32, x), 0);
+		tyg_val pa = tyg_addr_of(p, tyg_at_local(la, 0));
+		tyg_store(p, TYG_I64, tyg_at_val(pa, 0), k64(p, 7), 0);
+		tyg_val a7 = tyg_load(p, TYG_I64, tyg_at_local(la, 0), 0);
+		tyg_val f = tyg_convert(p, TYG_FTOSI, TYG_I64, tyg_load(p, TYG_F64, tyg_at_local(lf, 0), 0));
+		tyg_val n = tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(ln, 0), 0));
+		tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_MUL, a7, k64(p, 1000)), f), n));
+	}
+	check(tyg_proc_end(p));
 	// int32_t tg_switch8(int8_t x): x * 2 for 1 and 2 (one target), 7 for -1, x else
 	p = begin("tg_switch8", TYG_SYM_GLOBAL, sig(ty(TYG_I32), ty(TYG_I8), NULL, NULL, 0));
 	{

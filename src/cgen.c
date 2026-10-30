@@ -1440,6 +1440,7 @@ TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m) {
 		return;
 	case tgMem_Local:
 		if (p->c_names[m.base].len > 0) tg_c_printf(b, "((char *)&%s%s)", p->c_names[m.base].text, off);
+		else if (p->locals.data[m.base].type != NULL) tg_c_printf(b, "((char *)&l%u%s)", m.base, off);
 		else tg_c_printf(b, "((char *)l%u%s)", m.base, off);
 		return;
 	case tgMem_Sym:
@@ -1448,6 +1449,16 @@ TG_INTERNAL void tg_c_mem(tgProc *p, tgBytes *b, tgMem m) {
 		return;
 	}
 	tg_fail(p, "C output: incoming stack memory is not supported");
+}
+
+// The scalar type of the typed local a load or store of `size` bytes of vreg type t reads or writes
+// whole (tyg_local_typed), or NULL: an integer or pointer for an integer vreg, a float for a float.
+TG_INTERNAL tyg_type const *tg_c_whole_local(tgProc *p, tgMem m, i32 size, tgType t) {
+	if (m.kind != tgMem_Local || m.offset != 0 || m.tag != 0 || p->c_names[m.base].len > 0) return NULL;
+	tyg_type const *lt = p->locals.data[m.base].type;
+	if (lt == NULL || !tg_t_is_scalar(lt) || lt->size != size) return NULL;
+	bool fl = t == tgType_F32 || t == tgType_F64, lfl = lt->kind == tgT_F32 || lt->kind == tgT_F64;
+	return fl == lfl ? lt : NULL;
 }
 
 // Fails the procedure on an op the C output does not print yet.
@@ -1738,6 +1749,11 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			else tg_c_printf(b, "v%u = *(volatile %s *)", d, T);
 			tg_c_mem(p, b, in->mem);
 			tg_c_puts(b, ";");
+		} else if ((acc = tg_c_whole_local(p, in->mem, size, t)) != NULL) {
+			// a typed local read whole
+			if (p->c_ptr[d]) tg_c_printf(b, acc->kind == tgT_Ptr ? "v%u = (char *)l%u;" : "v%u = (char *)(uintptr_t)l%u;", d, in->mem.base);
+			else if (acc->kind == tgT_Ptr) tg_c_printf(b, "v%u = (%s)(uintptr_t)l%u;", d, T, in->mem.base);
+			else tg_c_printf(b, "v%u = (%s)l%u;", d, T, in->mem.base);
 		} else if ((acc = tg_c_tag_type(p->m, in->mem.tag, size, t)) != NULL) {
 			// a typed access: the vreg's unsigned type from the C type, a pointer as one
 			if (p->c_ptr[d]) tg_c_printf(b, acc->kind == tgT_Ptr ? "v%u = (char *)" : "v%u = (char *)(uintptr_t)", d);
@@ -1759,6 +1775,11 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			if (!p->c_ptr[a]) tg_c_printf(b, "*(volatile %s *)", T);
 			tg_c_mem(p, b, in->mem);
 			tg_c_printf(b, " = v%u;", a);
+		} else if ((acc = tg_c_whole_local(p, in->mem, size, t)) != NULL) {
+			// a typed local written whole
+			if (acc->kind == tgT_Ptr) tg_c_printf(b, p->c_ptr[a] ? "l%u = (void *)v%u;" : "l%u = (void *)(uintptr_t)v%u;", in->mem.base, a);
+			else if (acc->kind == tgT_Int) tg_c_printf(b, "l%u = (%s)v%u;", in->mem.base, acc->is_signed ? S : T, a);
+			else tg_c_printf(b, "l%u = v%u;", in->mem.base, a);
 		} else if ((acc = tg_c_tag_type(p->m, in->mem.tag, size, t)) != NULL) {
 			tg_c_mem_lvalue(p, b, in->mem);
 			if (acc->kind == tgT_Ptr) tg_c_printf(b, p->c_ptr[a] ? " = (void *)v%u;" : " = (void *)(uintptr_t)v%u;", a);
@@ -2056,6 +2077,15 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		tgLocal const *l = &p->locals.data[i];
 		i64 align = tg_max(l->over_align ? l->over_align : l->align, (i64)1);
 		tyg_dtype const *t = p->c_names[i].len > 0 ? tg_c_local_dtype(p, (i32)i) : NULL;
+		if (t == NULL && l->type != NULL) {   // a typed local, its C type
+			char name[24];
+			snprintf(name, sizeof(name), "l%d", (int)i);
+			// unused where the builder forwarded every value stored to it
+			tg_c_printf(&b, "\tTYG_UNUSED TYG_ALIGNED(%lld) %s", (long long)align, vol);
+			tg_c_type_decl(m, &b, l->type, name);
+			tg_c_puts(&b, ";\n");
+			continue;
+		}
 		if (t == NULL) {
 			tg_c_printf(&b, "\tTYG_ALIGNED(%lld) %sunsigned char l%d[%lld];\n", (long long)align, vol, (int)i, (long long)tg_max(l->size, (i64)1));
 			continue;

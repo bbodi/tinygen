@@ -538,6 +538,7 @@ typedef struct tgLocal {
 	i32 frame_offset;
 	i64 over_align; // > 16: frame_offset holds a pointer into an aligned spot of the raw area
 	i32 raw_offset;
+	tyg_type const *type; // tyg_local_typed's, for the C output; NULL: bytes
 } tgLocal;
 
 TG_ARRAY(tgLocalArray, tgLocal);
