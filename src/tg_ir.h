@@ -529,7 +529,7 @@ typedef struct tgBlock {
 // body starts at `head`, its exit is `end`. Its jumps carry tgInstrFlag_Struct, b = 1 + its index,
 // and imm2 in c: 1 to fall off (none printed), 2 a break, 3 a continue.
 typedef struct tgStruct {
-	u8  loop, known;
+	u8  loop, known, neg;   // neg: an if on cond being 0 (tyg_if_not)
 	u32 cond;
 	i32 at, then_, else_, end, head;
 	bool broken; // the blocks were not placed as it nests: printed with labels and gotos

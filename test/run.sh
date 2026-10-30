@@ -183,7 +183,7 @@ check_c_names() {
 	# structured control flow: tg_struct prints as for (;;), if/else, break and continue; the break
 	# out of the outer loop is the one goto
 	body=$(sed -n '/^int64_t tg_struct(int64_t p0) {$/,/^}$/p' "$1")
-	for decl in '	for (;;) {' '	} else {' '	break;' '	continue;' '	if (1) {'; do
+	for decl in '	for (;;) {' '	} else {' '	break;' '	continue;' '	if (1) {' '	if (!'; do
 		printf '%s\n' "$body" | grep -qF "$decl" || fail "cgen structured: tg_struct has no '$decl'"
 	done
 	[ "$(printf '%s\n' "$body" | grep -c 'goto ')" = 1 ] || fail "cgen structured: tg_struct has other gotos than the outer break"

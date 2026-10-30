@@ -2046,7 +2046,7 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		else b->count--;   // falls off: no statement (the tab goes)
 		break;
 	case tgOp_Branch:
-		if (tg_c_s_live(p, in)) tg_c_printf(b, "if (%s) {", A);
+		if (tg_c_s_live(p, in)) tg_c_printf(b, p->structs.data[in->b - 1].neg ? "if (!%s) {" : "if (%s) {", A);
 		else tg_c_printf(b, "if (%s) goto B%d; else goto B%u;", A, (int)in->imm, c);
 		break;
 	case tgOp_Ret:         tg_c_ret(p, b, in); break;
@@ -2407,6 +2407,25 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 			gone[v] = 1;
 		}
 		free(by);
+	}
+	// a goto to the label right after it goes, and a label no goto names any more
+	for (isize li = first; li < nl; li++) {
+		tgCLine *l = &ls[li];
+		if (l->dead || strncmp(l->s, "\tgoto B", 8) != 0) continue;
+		isize lj = li + 1;
+		while (lj < nl && (ls[lj].dead || ls[lj].n == 0 || strncmp(ls[lj].s, "#line", 5) == 0)) lj++;
+		if (lj < nl && ls[lj].n == l->n - 5 && !memcmp(ls[lj].s, l->s + 6, (usize)(l->n - 7)) &&
+		    !strcmp(ls[lj].s + ls[lj].n - 2, ":;"))
+			l->dead = true;   // "\tgoto Bn;" before "Bn:;"
+	}
+	for (isize li = first; li < nl; li++) {
+		tgCLine *l = &ls[li];
+		if (l->dead || l->s[0] != 'B' || l->n < 4 || strcmp(l->s + l->n - 2, ":;") != 0) continue;
+		char ref[32];
+		snprintf(ref, sizeof(ref), "goto %.*s;", (int)(l->n - 2), l->s);
+		bool named = false;
+		for (isize lj = first; lj < nl && !named; lj++) named = !ls[lj].dead && strstr(ls[lj].s, ref) != NULL;
+		if (!named) l->dead = true;
 	}
 	// the declarations of the values folded away
 	for (isize li = 0; li < first; li++) {

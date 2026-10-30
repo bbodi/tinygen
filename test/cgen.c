@@ -210,7 +210,7 @@ static void build_select(void) {
 		tyg_store(p, TYG_I64, tyg_at_local(li, 0), k64(p, 0), 0);
 		tyg_loop(p);
 		tyg_val i = tyg_load(p, TYG_I64, tyg_at_local(li, 0), 0);
-		tyg_if(p, tyg_cmp(p, TYG_SGE, i, n));
+		tyg_if_not(p, tyg_cmp(p, TYG_SLT, i, n));
 		tyg_break(p, 0);
 		tyg_endif(p);
 		i = tyg_load(p, TYG_I64, tyg_at_local(li, 0), 0);

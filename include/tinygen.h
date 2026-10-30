@@ -382,6 +382,7 @@ void tyg_branch(tyg_proc *p, tyg_val cond, tyg_block if_true, tyg_block if_false
    at tyg_endloop goes back to its start, and the code after the loop follows. tyg_break and
    tyg_continue leave or restart the depth-th enclosing loop, 0 the innermost. */
 void tyg_if(tyg_proc *p, tyg_val cond);
+void tyg_if_not(tyg_proc *p, tyg_val cond);   /* tyg_if whose then part runs where cond is 0 */
 void tyg_else(tyg_proc *p);
 void tyg_endif(tyg_proc *p);
 void tyg_loop(tyg_proc *p);

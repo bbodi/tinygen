@@ -1050,7 +1050,11 @@ TG_INTERNAL i32 tg_s_find(tgProc *p, bool loop, int depth, char const *who) {
 	return -1;
 }
 
-void tyg_if(tyg_proc *p, tyg_val cond) {
+TG_INTERNAL void tg_if(tgProc *p, tyg_val cond, bool neg);
+void tyg_if(tyg_proc *p, tyg_val cond) { tg_if(p, cond, false); }
+void tyg_if_not(tyg_proc *p, tyg_val cond) { tg_if(p, cond, true); }
+
+TG_INTERNAL void tg_if(tgProc *p, tyg_val cond, bool neg) {
 	tgStruct st;
 	if (!tg_b_ok(p) || tg_val_check(p, cond) == tgType_None) return;
 	memset(&st, 0, sizeof(st));
@@ -1064,9 +1068,11 @@ void tyg_if(tyg_proc *p, tyg_val cond) {
 	if (!st.broken) {
 		u32 c = tg_cond_bool(p, cond);
 		i64 k = 0;
-		if (tg_known(p, c, &k)) st.known = (k & 0xff) != 0 ? 2 : 1;
+		if (tg_known(p, c, &k)) st.known = ((k & 0xff) != 0) != neg ? 2 : 1;
 		st.cond = c;
-		tg_branch(p, c, then_, end);
+		st.neg = neg;
+		if (neg) tg_branch(p, c, end, then_);
+		else tg_branch(p, c, then_, end);
 		tg_s_flag(p, s, 0);
 	}
 	tg_array_add(&p->structs, st);
@@ -1094,7 +1100,8 @@ void tyg_else(tyg_proc *p) {
 	// the if's branch, or the jump it folded to, goes to the else part instead of the join
 	tgInstr *br = at->instrs.count > 0 ? &at->instrs.data[at->instrs.count - 1] : NULL;
 	if (br != NULL && (br->flags & tgInstrFlag_Struct) && br->b == (u32)s + 1) {
-		if (br->op == tgOp_Branch && br->c == (u32)st->end) br->c = (u32)e->index;
+		if (br->op == tgOp_Branch && st->neg && br->imm == st->end) br->imm = e->index;
+		else if (br->op == tgOp_Branch && br->c == (u32)st->end) br->c = (u32)e->index;
 		else if (br->op == tgOp_Jump && br->imm == st->end) br->imm = e->index;
 	}
 	tyg_block_set(p, e->index);
