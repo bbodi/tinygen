@@ -2787,6 +2787,32 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	for (bool changed = true; changed;) {
 		changed = false;
 		tg_c_fold_locals(p, ls, first, nl, &changed);
+		// a value whose last read went with a folded local: its definition goes too
+		memset(uses, 0, sizeof(isize) * (usize)nv);
+		for (isize li = first; li < nl; li++) {
+			if (ls[li].dead) continue;
+			char const *s = ls[li].s;
+			for (isize i = 0; i < ls[li].n; i++) {
+				if (s[i] != 'v' || (i > 0 && tg_c_idch(s[i - 1]))) continue;
+				isize j = i + 1;
+				u32 v = 0;
+				while (j < ls[li].n && s[j] >= '0' && s[j] <= '9') v = v * 10 + (u32)(s[j++] - '0');
+				if (j == i + 1 || (j < ls[li].n && tg_c_idch(s[j])) || v >= (u32)nv) continue;
+				uses[v]++;
+				i = j - 1;
+			}
+		}
+		for (isize li = first; li < nl; li++) {
+			char const *expr;
+			isize elen;
+			u32 v = ls[li].dead ? 0 : tg_c_def_line(&ls[li], &expr, &elen);
+			if (v == 0 || v >= (u32)nv || uses[v] != 1 || amp[v] || tg_c_has_call(expr, elen) || strstr(expr, "volatile") ||
+			    tg_c_reads_param(expr, elen))
+				continue;
+			ls[li].dead = true;
+			gone[v] = 1;
+			changed = true;
+		}
 	}
 	for (isize li = first; li < nl; li++) if (!ls[li].dead) {
 		for (isize n = -1; n != ls[li].n;) {   // each rule makes room for the other
