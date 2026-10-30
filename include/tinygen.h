@@ -312,6 +312,9 @@ tyg_local tyg_local_new(tyg_proc *p, int64_t size, int64_t align);
    declares with t's C type; a load or store of the whole local as its scalar prints there as a
    plain assignment. */
 tyg_local tyg_local_typed(tyg_proc *p, const tyg_type *t);
+/* tyg_local_typed aligned to at least `align` (a power of two), for a type whose own alignment is
+   lower (a packed record's). */
+tyg_local tyg_local_typed_align(tyg_proc *p, const tyg_type *t, int64_t align);
 
 /* A scalar parameter's value. For an aggregate parameter, the address of the
  * memory that holds it, which the procedure may write. */

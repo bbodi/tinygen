@@ -485,6 +485,18 @@ tyg_local tyg_local_typed(tyg_proc *p, const tyg_type *t) {
 	return (tyg_local)l;
 }
 
+tyg_local tyg_local_typed_align(tyg_proc *p, const tyg_type *t, int64_t align) {
+	i32 l;
+	if (!tg_b_ok(p)) return p ? (tyg_local)tg_add_local_raw(p, 1, 1) : 0;
+	if (t == NULL || t->kind == tgT_Void || t->size <= 0 || align <= 0 || !tg_is_pow2(align)) {
+		tg_fail(p, "tyg_local_typed_align: a type with a size, a power of two");
+		return (tyg_local)tg_add_local_raw(p, 1, 1);
+	}
+	l = tg_add_local_raw(p, t->size, tg_max(t->align, align));
+	p->locals.data[l].type = t;
+	return (tyg_local)l;
+}
+
 tyg_val tyg_param(tyg_proc *p, int index) {
 	if (p == NULL) return 0;
 	tg_b_ok(p);

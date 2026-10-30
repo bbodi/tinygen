@@ -171,7 +171,10 @@ The C reads like hand-written C rather than a dump of the IR:
   one expression. Casts that change no bit (`(uint64_t)((int64_t)v)` of an
   integer, a cast repeated) and doubled parentheses are dropped.
 - `tyg_local_typed(p, type)` declares a local with its C type. A load or store
-  of the whole local is a plain assignment.
+  of the whole local is a plain assignment, and a field of a record local
+  prints as `lN.field`, or as `name.field` when a debug variable names the
+  local. `tyg_local_typed_align(p, type, align)` raises the alignment of the
+  local, for a packed record.
 - The structured builders `tyg_if`/`tyg_if_not`/`tyg_else`/`tyg_endif`,
   `tyg_loop`/`tyg_break`/`tyg_continue`/`tyg_endloop` and
   `tyg_switch_begin`/`tyg_case`/`tyg_default`/`tyg_endswitch` build the same

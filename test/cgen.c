@@ -336,7 +336,8 @@ static void build_select(void) {
 		tyg_val q = tyg_param(p, 0);
 		tyg_addr ay = tyg_at_field(tyg_at_val(q, 0), pt, 1);
 		tyg_store(p, TYG_I32, ay, tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I32, ay, 0), k32(p, 1)), 0);
-		tyg_local lz = tyg_local_typed(p, zt);
+		tyg_local lz = tyg_local_typed_align(p, zt, 8);   // named pz: pz.z in the C
+		tyg_debug_var(p, "pz", tyg_dt_base(m, "int", 4, TYG_DT_SIGNED), tyg_at_local(lz, 0), file, 80);
 		tyg_addr az = tyg_at_field(tyg_at_local(lz, 0), zt, 0);
 		tyg_store(p, TYG_I32, az, tyg_load(p, TYG_I32, ay, 0), 0);
 		tyg_val x = tyg_load(p, TYG_I64, tyg_at_field(tyg_at_val(q, 0), pt, 0), 0);

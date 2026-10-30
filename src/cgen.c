@@ -1411,7 +1411,8 @@ TG_INTERNAL tyg_type const *tg_c_tag_type(tgModule *m, u32 tag, i64 size, tgType
 // Prints the lvalue of the tagged access to the bytes at `addr`, a char * expression:
 // `(*(T *)(addr))` for a type alone, else `((struct tyg_rN *)(addr - offset))->f1.a[2].f0`
 // along the path from the outer type, where the offset is subtracted unless `at_outer`
-// says addr is the outer type's already. The caller checked the path with tg_c_tag_type.
+// says addr is the outer type's already; addr "=lN" names the outer object itself, lN.f1.f0.
+// The caller checked the path with tg_c_tag_type.
 TG_INTERNAL void tg_c_lvalue(tgProc *p, tgBytes *b, u32 tag, char const *addr, isize addr_len, bool at_outer) {
 	tgCTag ct = tg_c_tags(p->m, tag);
 	i64 steps[tgCPathMax];
@@ -1425,10 +1426,15 @@ TG_INTERNAL void tg_c_lvalue(tgProc *p, tgBytes *b, u32 tag, char const *addr, i
 		return;
 	}
 	i32 rn = tg_c_record(p->m, ct.outer);
+	if (addr_len > 0 && addr[0] == '=') {   // "=lN": the typed local of the outer type itself
+		tg_c_printf(b, "%.*s.", (int)addr_len - 1, addr + 1);
+		goto path;
+	}
 	if (ct.outer->kind == tgT_Record && ct.outer->c_name) tg_c_printf(b, "((struct %s *)(%.*s", ct.outer->c_name, (int)addr_len, addr);
 	else tg_c_printf(b, "((struct tyg_r%d *)(%.*s", rn, (int)addr_len, addr);
 	if (ct.offset != 0 && !at_outer) tg_c_printf(b, " - %lld", (long long)ct.offset);
 	tg_c_puts(b, "))->");
+path:
 	for (int i = 0; i < n; i++) {
 		if (t->kind == tgT_Array) {
 			// an array type alone is struct tyg_rN { T a[n]; }; a member keeps its dimensions
@@ -1457,6 +1463,14 @@ TG_INTERNAL void tg_c_mem_lvalue(tgProc *p, tgBytes *b, tgMem m) {
 	tgCTag ct = tg_c_tags(p->m, m.tag);
 	memset(&addr, 0, sizeof(addr));
 	m.offset -= (i32)ct.offset;
+	if (m.kind == tgMem_Local && m.offset == 0 && p->locals.data[m.base].type == ct.outer &&
+	    ct.outer->kind == tgT_Record && ct.outer != ct.type) {
+		char nm[80];   // a field of a typed local of the record: lN.f, name.f
+		if (p->c_names[m.base].len > 0) snprintf(nm, sizeof(nm), "=%s", p->c_names[m.base].text);
+		else snprintf(nm, sizeof(nm), "=l%u", m.base);
+		tg_c_lvalue(p, b, m.tag, nm, (isize)strlen(nm), true);
+		return;
+	}
 	tg_c_mem(p, &addr, m);
 	tg_c_lvalue(p, b, m.tag, (char const *)addr.data, addr.count, true);
 	tg_array_free(&addr);
@@ -2265,6 +2279,11 @@ TG_INTERNAL void tg_c_debug_names(tgProc *p) {
 		i32 k = v->is_param ? tg_c_param_stored(p, v->local) : -1;
 		if (k >= 0 && p->c_names[locals + k].len == 0) p->c_names[locals + k] = tg_c_var_name(p, v->name, false);
 		tgLocal const *l = &p->locals.data[v->local];
+		if (tg_c_local_var(p, v->local) == v && l->type != NULL && l->type->kind == tgT_Record) {
+			// a typed record local keeps its type and takes the name: name.field
+			p->c_names[v->local] = tg_c_var_name(p, v->name, true);
+			continue;
+		}
 		if (tg_c_local_var(p, v->local) == v && tg_c_dt_form(m, v->type) && tg_c_dt(m, v->type)->size == l->size &&
 		    tg_c_dt(m, v->type)->align <= tg_max(l->over_align ? l->over_align : l->align, (i64)1)) {
 			tg_c_dt_define(m, v->type); // first: its typedefs take names a variable then avoids
@@ -2859,10 +2878,12 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 	for (isize i = 0; i < p->locals.count; i++) {
 		tgLocal const *l = &p->locals.data[i];
 		i64 align = tg_max(l->over_align ? l->over_align : l->align, (i64)1);
-		tyg_dtype const *t = p->c_names[i].len > 0 ? tg_c_local_dtype(p, (i32)i) : NULL;
+		bool rec = l->type != NULL && l->type->kind == tgT_Record;   // named or not, its own type
+		tyg_dtype const *t = p->c_names[i].len > 0 && !rec ? tg_c_local_dtype(p, (i32)i) : NULL;
 		if (t == NULL && l->type != NULL) {   // a typed local, its C type
-			char name[24];
-			snprintf(name, sizeof(name), "l%d", (int)i);
+			char name[80];
+			if (p->c_names[i].len > 0) snprintf(name, sizeof(name), "%s", p->c_names[i].text);
+			else snprintf(name, sizeof(name), "l%d", (int)i);
 			// unused where the builder forwarded every value stored to it
 			tg_c_printf(&b, "\tTYG_UNUSED TYG_ALIGNED(%lld) %s", (long long)align, vol);
 			tg_c_type_decl(m, &b, l->type, name);
