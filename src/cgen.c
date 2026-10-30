@@ -2489,6 +2489,83 @@ TG_INTERNAL void tg_c_forward_vars(tgProc *p, tgCLine *ls, isize first, isize nl
 	}
 }
 
+// The token name's occurrences in s; *amp set where one is &name.
+TG_INTERNAL isize tg_c_count_tok(char const *s, isize n, char const *name, isize len, bool *amp) {
+	isize c = 0;
+	for (isize i = 0; i + len <= n; i++) {
+		if (memcmp(s + i, name, (usize)len) || (i > 0 && tg_c_idch(s[i - 1])) || (i + len < n && tg_c_idch(s[i + len]))) continue;
+		if (i > 0 && s[i - 1] == '&') *amp = true;
+		c++;
+	}
+	return c;
+}
+
+// A local with no name (lN) assigned `lN = (EXPR);` and read on one later line of its block,
+// and named nowhere else, gives way to EXPR in that read: a value passed through temporaries
+// (a call's result, then its destination) reads as one expression. One never read goes.
+TG_INTERNAL void tg_c_fold_locals(tgProc *p, tgCLine *ls, isize first, isize nl, bool *changed) {
+	for (isize li = first; li < nl; li++) {
+		tgCLine *a = &ls[li];
+		if (a->dead || a->n < 7 || a->s[0] != '\t' || a->s[1] != 'l') continue;
+		isize i = 2;
+		while (i < a->n && a->s[i] >= '0' && a->s[i] <= '9') i++;
+		if (i == 2 || i + 4 > a->n || memcmp(a->s + i, " = (", 4) || a->s[a->n - 1] != ';') continue;
+		isize nlen = i - 1;
+		char name[24];
+		if (nlen >= (isize)sizeof(name)) continue;
+		memcpy(name, a->s + 1, (usize)nlen);
+		name[nlen] = 0;
+		if (tg_c_local_named(p, name, nlen) < 0) continue;
+		char const *expr = a->s + i + 3;
+		isize elen = a->n - (i + 3) - 1;
+		bool one = true;   // a single statement, no assignment in it
+		for (isize k = 0; k < elen && one; k++) one = expr[k] != ';' && !(expr[k] == '=' && expr[k + 1] != '=' && (k == 0 || !strchr("=!<>", expr[k - 1])));
+		if (!one || tg_c_has_call(expr, elen)) continue;
+		bool amp = false;
+		isize total = 0;
+		for (isize lk = first; lk < nl && !amp; lk++) if (!ls[lk].dead) total += tg_c_count_tok(ls[lk].s, ls[lk].n, name, nlen, &amp);
+		if (!amp && total == 1 && !strstr(expr, "volatile") && !tg_c_reads_param(expr, elen)) {   // never read: it goes
+			a->dead = true;
+			*changed = true;
+			continue;
+		}
+		if (amp || total != 2) continue;
+		bool pure = tg_c_pure(expr, elen), found = false;
+		isize lj = li + 1;
+		for (; lj < nl; lj++) {
+			tgCLine const *l = &ls[lj];
+			if (l->dead || strncmp(l->s, "#line", 5) == 0) continue;
+			if (l->s[0] == 'B' || !strncmp(l->s, "\tcase ", 6) || !strncmp(l->s, "\tdefault:", 9)) break;
+			bool am = false;
+			if (tg_c_count_tok(l->s, l->n, name, nlen, &am) > 0) { found = true; break; }
+			if (tg_c_ends_block(l)) break;
+			char const *e2;
+			isize l2;
+			if (!pure && (tg_c_def_line(l, &e2, &l2) == 0 || tg_c_has_call(e2, l2))) break;
+		}
+		if (!found) continue;
+		tgCLine *u = &ls[lj];
+		// the read is the token alone, maybe behind a cast: it takes (EXPR)
+		isize at = -1;
+		for (isize k = 0; k + nlen <= u->n && at < 0; k++)
+			if (!memcmp(u->s + k, name, (usize)nlen) && (k == 0 || !tg_c_idch(u->s[k - 1])) && (k + nlen == u->n || !tg_c_idch(u->s[k + nlen]))) at = k;
+		if (at < 0 || (at + nlen + 2 < u->n && u->s[at + nlen] == ' ' && u->s[at + nlen + 1] == '=' && u->s[at + nlen + 2] != '=')) continue;   // written there
+		isize n = u->n - nlen + elen + 2;
+		char *ns = (char *)malloc((usize)n + 1);
+		memcpy(ns, u->s, (usize)at);
+		ns[at] = '(';
+		memcpy(ns + at + 1, expr, (usize)elen);
+		ns[at + 1 + elen] = ')';
+		memcpy(ns + at + 2 + elen, u->s + at + nlen, (usize)(u->n - at - nlen));
+		ns[n] = 0;
+		free(u->s);
+		u->s = ns;
+		u->n = n;
+		a->dead = true;
+		*changed = true;
+	}
+}
+
 // Folds the statements of the body in b from `body` on (and the declarations of what folded
 // away, from `decl` to `body`), see above.
 TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
@@ -2584,6 +2661,10 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		}
 		free(by);
 	}
+	for (bool changed = true; changed;) {
+		changed = false;
+		tg_c_fold_locals(p, ls, first, nl, &changed);
+	}
 	// a goto to the label right after it goes, and a label no goto names any more
 	for (isize li = first; li < nl; li++) {
 		tgCLine *l = &ls[li];
@@ -2603,10 +2684,19 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		for (isize lj = first; lj < nl && !named; lj++) named = !ls[lj].dead && strstr(ls[lj].s, ref) != NULL;
 		if (!named) l->dead = true;
 	}
-	// the declarations of the values folded away
+	// the declarations of the values folded away, and of the locals with no name the body names
+	// no more
 	for (isize li = 0; li < first; li++) {
 		char const *s = ls[li].s;
 		char const *vp = strrchr(s, ' ');
+		if (vp != NULL && vp[1] == 'l' && strncmp(s, "\tTYG_UNUSED ", 12) == 0 && s[ls[li].n - 1] == ';') {
+			isize nlen = ls[li].n - (vp + 1 - s) - 1;
+			bool am = false, named = false;
+			if (tg_c_local_named(p, vp + 1, nlen) < 0) continue;
+			for (isize lk = first; lk < nl && !named; lk++) named = !ls[lk].dead && tg_c_count_tok(ls[lk].s, ls[lk].n, vp + 1, nlen, &am) > 0;
+			if (!named) ls[li].dead = true;
+			continue;
+		}
 		if (vp != NULL && vp[1] == '*') vp++;   // char *vN
 		if (vp == NULL || strncmp(s, "\tTYG_UNUSED ", 12) != 0 || vp[1] != 'v' || s[ls[li].n - 1] != ';') continue;
 		char *end;

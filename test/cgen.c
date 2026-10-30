@@ -188,6 +188,9 @@ static void build_select(void) {
 		tyg_val a = tyg_load(p, TYG_I64, tyg_at_local(la, 0), 0);
 		tyg_val pq = tyg_load(p, TYG_I64, tyg_at_local(lq, 0), 0);
 		tyg_store(p, TYG_I64, tyg_at_val(pq, 0), tyg_bin(p, TYG_ADD, a, k64(p, 1)), 0);
+		// each local read twice, so none folds into its one read (tg_c_fold_locals)
+		tyg_val pq2 = tyg_load(p, TYG_I64, tyg_at_local(lq, 0), 0);
+		tyg_store(p, TYG_I64, tyg_at_val(pq2, 0), tyg_bin(p, TYG_ADD, a, k64(p, 1)), 0);
 		tyg_store(p, TYG_F64, tyg_at_local(lf, 0), tyg_convert(p, TYG_SITOF, TYG_F64, a), 0);
 		tyg_store(p, TYG_I32, tyg_at_local(ln, 0), tyg_convert(p, TYG_TRUNC, TYG_I32, x), 0);
 		tyg_val pa = tyg_addr_of(p, tyg_at_local(la, 0));
@@ -195,7 +198,20 @@ static void build_select(void) {
 		tyg_val a7 = tyg_load(p, TYG_I64, tyg_at_local(la, 0), 0);
 		tyg_val f = tyg_convert(p, TYG_FTOSI, TYG_I64, tyg_load(p, TYG_F64, tyg_at_local(lf, 0), 0));
 		tyg_val n = tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(ln, 0), 0));
-		tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_MUL, a7, k64(p, 1000)), f), n));
+		tyg_val f2 = tyg_convert(p, TYG_FTOSI, TYG_I64, tyg_load(p, TYG_F64, tyg_at_local(lf, 0), 0));
+		tyg_val n2 = tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, tyg_at_local(ln, 0), 0));
+		tyg_val sum = tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_MUL, a7, k64(p, 1000)), f), n);
+		tyg_ret(p, tyg_bin(p, TYG_ADD, sum, tyg_bin(p, TYG_SUB, tyg_bin(p, TYG_SUB, f2, f), tyg_bin(p, TYG_SUB, n2, n))));
+	}
+	check(tyg_proc_end(p));
+	// int64_t tg_chain(int64_t x): a typed local a = x * 5, b = a, return b + 1: one expression,
+	// no local left (tg_c_fold_locals)
+	p = begin("tg_chain", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
+	{
+		tyg_local la = tyg_local_typed(p, ty(TYG_I64)), lb = tyg_local_typed(p, ty(TYG_I64));
+		tyg_store(p, TYG_I64, tyg_at_local(la, 0), tyg_bin(p, TYG_MUL, tyg_param(p, 0), k64(p, 5)), 0);
+		tyg_store(p, TYG_I64, tyg_at_local(lb, 0), tyg_load(p, TYG_I64, tyg_at_local(la, 0), 0), 0);
+		tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(lb, 0), 0), k64(p, 1)));
 	}
 	check(tyg_proc_end(p));
 	// int64_t tg_struct(int64_t n): structured control flow (tyg_if, tyg_loop):

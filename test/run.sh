@@ -178,7 +178,7 @@ check_c_names() {
 		grep -q "$decl" "$1" || fail "cgen typed locals: no line matches $decl"
 	done
 	# expressions (tg_c_fold): tg_typed_locals returns one expression of its locals and constants
-	grep -q '^	return (int64_t).*l[0-9]*) \* UINT64_C(0x3e8).*(double)l[0-9]*.*(uint32_t)l[0-9]*)*;$' "$1" ||
+	grep -q '^	return (int64_t).*l[0-9]*) \* UINT64_C(0x3e8).*(double)l[0-9]*.*(uint32_t)l[0-9]*' "$1" ||
 		fail "cgen expressions: tg_typed_locals does not return one expression"
 	# structured control flow: tg_struct prints as for (;;), if/else, break and continue; the break
 	# out of the outer loop is the one goto; its if (1) prints as the part that runs
@@ -206,6 +206,9 @@ check_c_names() {
 	# a variable's value read as the variable (tg_c_forward_vars): acc = acc ^ (acc << 13)
 	sed -n '/^int64_t tg_forward(int64_t p0) {$/,/^}$/p' "$1" | grep -q 'acc = .*acc) ^ .*acc) << ' ||
 		fail "cgen forward: tg_forward does not read acc as acc"
+	# a local assigned and read once folds into its read (tg_c_fold_locals): no local left
+	! sed -n '/^int64_t tg_chain(int64_t p0) {$/,/^}$/p' "$1" | grep -q 'l[0-9]' ||
+		fail "cgen chain: tg_chain keeps a local"
 	# no goto to the label right after it
 	! awk '/^\t*goto B[0-9]+;$/ { g = $1 " " $2; sub(/^.*goto /, "", g); sub(/;$/, "", g); next_is = g ":;"; next }
 		next_is != "" && $0 == next_is { found = 1 } { next_is = "" } END { exit !found }' "$1" ||
