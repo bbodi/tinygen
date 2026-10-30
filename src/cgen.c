@@ -2107,6 +2107,211 @@ TG_INTERNAL void tg_c_debug_names(tgProc *p) {
 	}
 }
 
+
+////////////////////////////////////////////////////////////////
+// Expressions
+//
+// The printer gives every IR value its own statement, `vN = EXPR;`. A value has one definition,
+// so where its single use is in the same block the statement folds into the use as (EXPR), and a
+// constant folds into every use: the C reads as expressions. EXPR that reads memory or a variable
+// does not move past a line that may write either (a store, a call, an assignment to other than a
+// value); a value whose address is taken (&vN) stays a statement.
+////////////////////////////////////////////////////////////////
+
+typedef struct tgCLine { char *s; isize n; bool dead; } tgCLine;
+
+TG_INTERNAL bool tg_c_idch(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
+
+// The value a line defines, `\tvN = EXPR;` alone on it, or 0; *expr and *elen its EXPR.
+TG_INTERNAL u32 tg_c_def_line(tgCLine const *l, char const **expr, isize *elen) {
+	char const *s = l->s;
+	if (l->n < 7 || s[0] != '\t' || s[1] != 'v' || s[l->n - 1] != ';') return 0;
+	isize i = 2;
+	u32 v = 0;
+	while (i < l->n && s[i] >= '0' && s[i] <= '9') v = v * 10 + (u32)(s[i++] - '0');
+	if (i == 2 || i + 3 > l->n || s[i] != ' ' || s[i + 1] != '=' || s[i + 2] != ' ') return 0;
+	*expr = s + i + 3;
+	*elen = l->n - (i + 3) - 1;
+	for (isize k = 0; k < *elen; k++) if ((*expr)[k] == ';') return 0;   // one statement
+	return v;
+}
+
+// Calls a token is: an identifier followed by '(' other than these pure macros.
+TG_INTERNAL bool tg_c_has_call(char const *s, isize n) {
+	for (isize i = 0; i < n; i++) {
+		if (!tg_c_idch(s[i]) || (i > 0 && tg_c_idch(s[i - 1]))) continue;
+		isize j = i;
+		while (j < n && tg_c_idch(s[j])) j++;
+		if (j < n && s[j] == '(' && !(s[i] >= '0' && s[i] <= '9')) {
+			isize len = j - i;
+			if (!((len == 8 && !memcmp(s + i, "UINT64_C", 8)) || (len == 7 && !memcmp(s + i, "INT64_C", 7)))) return true;
+		}
+		i = j;
+	}
+	return false;
+}
+
+// Whether EXPR names nothing but values, constants and C types: it reads no memory or variable.
+TG_INTERNAL bool tg_c_pure(char const *s, isize n) {
+	static char const *const ok[] = { "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t", "int32_t",
+		"int64_t", "uintptr_t", "intptr_t", "char", "double", "float", "UINT64_C", "INT64_C", NULL };
+	for (isize i = 0; i < n; i++) {
+		if (!tg_c_idch(s[i]) || (i > 0 && tg_c_idch(s[i - 1]))) continue;
+		isize j = i;
+		while (j < n && tg_c_idch(s[j])) j++;
+		bool good = (s[i] >= '0' && s[i] <= '9');
+		if (!good && s[i] == 'v' && j - i > 1) {
+			good = true;
+			for (isize k = i + 1; k < j; k++) good = good && s[k] >= '0' && s[k] <= '9';
+		}
+		for (int k = 0; !good && ok[k]; k++) good = (isize)strlen(ok[k]) == j - i && !memcmp(s + i, ok[k], (usize)(j - i));
+		if (!good) return false;
+		i = j;
+	}
+	return true;
+}
+
+// A line after which a block's code does not go on: a jump, a return, a switch.
+TG_INTERNAL bool tg_c_ends_block(tgCLine const *l) {
+	return strstr(l->s, "goto ") != NULL || strncmp(l->s, "\treturn", 7) == 0 || strncmp(l->s, "\tswitch", 7) == 0 ||
+	       strstr(l->s, "TYG_UNREACHABLE") != NULL || strstr(l->s, "TYG_TRAP") != NULL;
+}
+
+// The token vN's occurrences in s: where each starts, up to max; the count.
+TG_INTERNAL isize tg_c_find_v(char const *s, isize n, u32 v, isize *at, isize max) {
+	char name[16];
+	isize len = snprintf(name, sizeof(name), "v%u", v), c = 0;
+	for (isize i = 0; i + len <= n; i++) {
+		if (memcmp(s + i, name, (usize)len) || (i > 0 && tg_c_idch(s[i - 1])) || (i + len < n && tg_c_idch(s[i + len]))) continue;
+		if (c < max) at[c] = i;
+		c++;
+	}
+	return c;
+}
+
+// Replaces the token vN in the line by `by`.
+TG_INTERNAL void tg_c_subst(tgCLine *l, u32 v, char const *by, isize blen) {
+	isize at[64], k = tg_c_find_v(l->s, l->n, v, at, 64);
+	char name[16];
+	isize len = snprintf(name, sizeof(name), "v%u", v);
+	if (k > 64) k = 64;
+	isize n = l->n + k * (blen - len);
+	char *s = (char *)malloc((usize)n + 1), *o = s;
+	isize prev = 0;
+	for (isize i = 0; i < k; i++) {
+		memcpy(o, l->s + prev, (usize)(at[i] - prev)); o += at[i] - prev;
+		memcpy(o, by, (usize)blen); o += blen;
+		prev = at[i] + len;
+	}
+	memcpy(o, l->s + prev, (usize)(l->n - prev)); o += l->n - prev;
+	*o = 0;
+	free(l->s);
+	l->s = s;
+	l->n = o - s;
+}
+
+// Folds the statements of the body in b from `body` on (and the declarations of what folded
+// away, from `decl` to `body`), see above.
+TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
+	isize nl = 0, cap = 256;
+	tgCLine *ls = (tgCLine *)malloc(sizeof(tgCLine) * (usize)cap);
+	for (isize i = decl; i < b->count;) {
+		isize j = i;
+		while (j < b->count && b->data[j] != '\n') j++;
+		if (nl == cap) ls = (tgCLine *)realloc(ls, sizeof(tgCLine) * (usize)(cap *= 2));
+		ls[nl].n = j - i;
+		ls[nl].s = (char *)malloc((usize)(j - i) + 1);
+		memcpy(ls[nl].s, b->data + i, (usize)(j - i));
+		ls[nl].s[j - i] = 0;
+		ls[nl].dead = false;
+		nl++;
+		i = j + 1;
+	}
+	isize first = 0;   // the first body line
+	for (isize i = decl; i < body; i++) if (b->data[i] == '\n') first++;
+	isize nv = p->vregs.count + 1;
+	isize *uses = (isize *)calloc((usize)nv, sizeof(isize));
+	u8 *amp = (u8 *)calloc((usize)nv, 1), *gone = (u8 *)calloc((usize)nv, 1);
+	for (isize li = first; li < nl; li++) {
+		char const *s = ls[li].s;
+		for (isize i = 0; i < ls[li].n; i++) {
+			if (s[i] != 'v' || (i > 0 && tg_c_idch(s[i - 1]))) continue;
+			isize j = i + 1;
+			u32 v = 0;
+			while (j < ls[li].n && s[j] >= '0' && s[j] <= '9') v = v * 10 + (u32)(s[j++] - '0');
+			if (j == i + 1 || (j < ls[li].n && tg_c_idch(s[j])) || v >= (u32)nv) continue;
+			uses[v]++;
+			if (i > 0 && s[i - 1] == '&') amp[v] = 1;
+			i = j - 1;
+		}
+	}
+	for (isize li = first; li < nl; li++) {
+		char const *expr;
+		isize elen;
+		u32 v = tg_c_def_line(&ls[li], &expr, &elen);
+		if (v == 0 || v >= (u32)nv || amp[v] || tg_c_has_call(expr, elen)) continue;
+		tgType t = p->vregs.data[v];
+		char const *T = p->c_ptr[v] ? "char *" : tg_c_utypes[t];
+		bool konst = (elen > 9 && !memcmp(expr, "UINT64_C(0x", 11 <= elen ? 11 : 0)) ||
+		             (elen > 3 && expr[0] == '0' && expr[1] == 'x' && expr[elen - 1] == 'u');
+		// The expression with the value's C type, parenthesized.
+		char *by = (char *)malloc((usize)elen + 64);
+		isize tl = (isize)strlen(T);
+		bool typed = elen > tl + 2 && expr[0] == '(' && !memcmp(expr + 1, T, (usize)tl) && expr[tl + 1] == ')';
+		bool wide = t == tgType_I64 || t == tgType_I32;
+		if (konst && (wide || !strcmp(T, "char *"))) snprintf(by, (usize)elen + 64, "%.*s", (int)elen, expr);
+		else if (typed || (p->c_ptr[v] && expr[0] == '(')) snprintf(by, (usize)elen + 64, "(%.*s)", (int)elen, expr);
+		else snprintf(by, (usize)elen + 64, "((%s)(%.*s))", T, (int)elen, expr);
+		isize blen = (isize)strlen(by);
+		if (konst) {
+			for (isize lj = first; lj < nl; lj++)
+				if (lj != li && !ls[lj].dead) tg_c_subst(&ls[lj], v, by, blen);
+			ls[li].dead = true;
+			gone[v] = 1;
+			free(by);
+			continue;
+		}
+		if (uses[v] != 2) { free(by); continue; }
+		bool pure = tg_c_pure(expr, elen), found = false;
+		isize lj = li + 1;
+		for (; lj < nl; lj++) {
+			if (ls[lj].dead || strncmp(ls[lj].s, "#line", 5) == 0) continue;
+			if (ls[lj].s[0] == 'B') break;   // a label: another block
+			isize at[1];
+			if (tg_c_find_v(ls[lj].s, ls[lj].n, v, at, 1) > 0) { found = true; break; }
+			if (tg_c_ends_block(&ls[lj])) break;
+			char const *e2;
+			isize l2;
+			if (!pure && (tg_c_def_line(&ls[lj], &e2, &l2) == 0 || tg_c_has_call(e2, l2))) break;
+		}
+		if (found) {
+			tg_c_subst(&ls[lj], v, by, blen);
+			ls[li].dead = true;
+			gone[v] = 1;
+		}
+		free(by);
+	}
+	// the declarations of the values folded away
+	for (isize li = 0; li < first; li++) {
+		char const *s = ls[li].s;
+		char const *vp = strrchr(s, ' ');
+		if (vp == NULL || strncmp(s, "\tTYG_UNUSED ", 12) != 0 || vp[1] != 'v' || s[ls[li].n - 1] != ';') continue;
+		char *end;
+		u32 v = (u32)strtoul(vp + 2, &end, 10);
+		if (end == vp + 2 || strcmp(end, ";") != 0) continue;   // a named variable such as v2_1
+		if (v > 0 && v < (u32)nv && gone[v]) ls[li].dead = true;
+	}
+	b->count = decl;
+	for (isize li = 0; li < nl; li++) {
+		if (!ls[li].dead) {
+			tg_array_add_elems(b, (u8 const *)ls[li].s, ls[li].n);
+			tg_array_add(b, (u8)'\n');
+		}
+		free(ls[li].s);
+	}
+	free(ls); free(uses); free(amp); free(gone);
+}
+
 // Whether anything but a store of a whole scalar names the local: a load, its address, a copy.
 TG_INTERNAL bool tg_c_local_read(tgProc *p, i32 local) {
 	for (isize bi = 0; bi < p->order.count; bi++) {
@@ -2132,6 +2337,7 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 	tg_c_pointers(p);
 	tg_c_proto(m, &b, p->sym, p);
 	tg_c_puts(&b, " {\n");
+	isize decl = b.count;
 	// what changes between a setjmp and its longjmp is lost unless volatile
 	char const *vol = p->c_returns_twice ? "volatile " : "";
 	for (isize i = 0; i < p->locals.count; i++) {
@@ -2193,6 +2399,7 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		}
 	}
 	i32 line = 0, file = 0;
+	isize body = b.count;
 	for (isize bi = 0; bi < p->order.count && p->fail_reason == NULL; bi++) {
 		tgBlock *blk = p->order.data[bi];
 		if (!tg_block_terminated(blk)) {
@@ -2207,6 +2414,7 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		for (isize ii = 0; ii < ni - (sw ? 1 : 0); ii++) tg_c_instr(p, &b, &blk->instrs.data[ii], &line, &file);
 		if (sw) tg_c_switch(p, &b, &p->switches.data[blk->sw - 1]);
 	}
+	if (p->fail_reason == NULL && !p->c_returns_twice) tg_c_fold(p, &b, decl, body);
 	tg_c_puts(&b, "}\n");
 	if (p->fail_reason == NULL) {
 		tg_array_add_elems(&m->c_procs, b.data, b.count);

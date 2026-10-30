@@ -164,18 +164,22 @@ check_c_names() {
 	for decl in 'struct Bits {' 'struct Bits bits' 'struct Packed'; do
 		! grep -q "$decl" "$1" || fail "cgen C names: '$decl', yet it has no C form"
 	done
-	# typed memory: tagged accesses are typed lvalues, a tagged copy a struct assignment
-	for decl in '^	v[0-9]* = (float)((struct tyg_r[0-9]* \*)(v1))->f1;$' '^	((struct tyg_r[0-9]* \*)(v1))->f3 = (int64_t)v[0-9]*;$' \
-		'^	(\*(struct tyg_r[0-9]* \*)(v[0-9]*)) = (\*(struct tyg_r[0-9]* \*)(v[0-9]*));$' '^	((struct tyg_r[0-9]* \*)(v1))->u.l2.f2 = (int64_t)v2;$' \
-		'^	((struct tyg_r[0-9]* \*)(((char \*)&tg_t_glob)))->f0.f0 = (int32_t)v[0-9]*;$' \
-		'^	((struct tyg_r[0-9]* \*)(v1))->f1.f3 = (int64_t)v[0-9]*;$' '^	((struct tyg_r[0-9]* \*)(v[0-9]* - 32))->f2\[0\] = ((struct tyg_r[0-9]* \*)(v[0-9]* - 8))->f1;$'; do
+	# typed memory: tagged accesses are typed lvalues, a tagged copy a struct assignment (operands
+	# may be folded expressions, see tg_c_fold)
+	for decl in '= (float)((struct tyg_r[0-9]* \*)(.*))->f1;$' '^	((struct tyg_r[0-9]* \*)(.*))->f3 = (int64_t)' \
+		'^	(\*(struct tyg_r[0-9]* \*)(.*)) = (\*(struct tyg_r[0-9]* \*)(.*));$' '^	((struct tyg_r[0-9]* \*)(.*))->u.l2.f2 = (int64_t)' \
+		'^	((struct tyg_r[0-9]* \*)(.*&tg_t_glob.*))->f0.f0 = (int32_t)' \
+		'^	((struct tyg_r[0-9]* \*)(.*))->f1.f3 = (int64_t)' '^	((struct tyg_r[0-9]* \*)(.* - 32))->f2\[0\] = ((struct tyg_r[0-9]* \*)(.* - 8))->f1;$'; do
 		grep -q "$decl" "$1" || fail "cgen typed memory: no line matches $decl"
 	done
 	# typed locals (tyg_local_typed): declared with their C types, read and written whole plainly
 	for decl in '^	TYG_UNUSED TYG_ALIGNED(8) int64_t l[0-9]*;$' '^	TYG_UNUSED TYG_ALIGNED(8) void \*l[0-9]*;$' '^	TYG_UNUSED TYG_ALIGNED(8) double l[0-9]*;$' \
-		'^	TYG_UNUSED TYG_ALIGNED(4) int32_t l[0-9]*;$' '^	l[0-9]* = (int64_t)v[0-9]*;$' '^	v[0-9]* = (uint64_t)l[0-9]*;$' '^	l[0-9]* = (void \*)v[0-9]*;$'; do
+		'^	TYG_UNUSED TYG_ALIGNED(4) int32_t l[0-9]*;$' '^	l[0-9]* = (int64_t)v[0-9]*;$' '(uint64_t)l[0-9]*' '^	l[0-9]* = (void \*)'; do
 		grep -q "$decl" "$1" || fail "cgen typed locals: no line matches $decl"
 	done
+	# expressions (tg_c_fold): tg_typed_locals returns one expression of its locals and constants
+	grep -q '^	return (int64_t).*(uint64_t)l[0-9]*) \* (uint64_t)UINT64_C(0x3e8).*(double)l[0-9]*.*(uint32_t)l[0-9]*)*;$' "$1" ||
+		fail "cgen expressions: tg_typed_locals does not return one expression"
 	# tyg_switch: one C switch, its cases and default
 	grep -q '^	switch (.*) { case 0ULL: goto B[0-9]*; case 5ULL: goto B[0-9]*; case 18446744073709551613ULL: goto B[0-9]*; case 9223372036854775808ULL: goto B[0-9]*; default: goto B[0-9]*; }$' "$1" ||
 		fail "cgen switch: no C switch for tg_switch"
