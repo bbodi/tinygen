@@ -2423,6 +2423,72 @@ TG_INTERNAL void tg_c_known_ifs(tgCLine *ls, isize first, isize nl) {
 	}
 }
 
+// The local that `name` names in the C (lN, or its variable's name), or -1.
+TG_INTERNAL i32 tg_c_local_named(tgProc *p, char const *name, isize n) {
+	if (n >= 2 && name[0] == 'l') {
+		i32 k = 0;
+		isize i = 1;
+		while (i < n && name[i] >= '0' && name[i] <= '9') k = k * 10 + (name[i++] - '0');
+		if (i == n && k < p->locals.count && p->c_names[k].len == 0) return k;
+	}
+	for (isize k = 0; k < p->locals.count; k++)
+		if (p->c_names[k].len == n && !memcmp(p->c_names[k].text, name, (usize)n)) return (i32)k;
+	return -1;
+}
+
+// After `name = (T)vN;`, a local of the value's size whose address the procedure never takes,
+// the lines on to the end of the block read vN as name, up to and with the next assignment to
+// it: the C reads the variable as the source does (v = v ^ (v << 13)), not the value it holds.
+TG_INTERNAL void tg_c_forward_vars(tgProc *p, tgCLine *ls, isize first, isize nl) {
+	for (isize la = first; la < nl; la++) {
+		tgCLine const *a = &ls[la];
+		if (a->dead || a->n < 8 || a->s[0] != '\t' || !tg_c_idch(a->s[1])) continue;
+		isize i = 1;
+		while (i < a->n && tg_c_idch(a->s[i])) i++;
+		isize nlen = i - 1;
+		char const *name = a->s + 1;
+		if (i + 4 > a->n || memcmp(a->s + i, " = (", 4) || (name[0] == 'v' && nlen > 1 && name[1] >= '0' && name[1] <= '9')) continue;
+		isize c = i + 4;
+		while (c < a->n && a->s[c] != ')') c++;   // the cast's close; a pointer type's has no ')' before
+		if (c + 2 >= a->n || a->s[c + 1] != 'v') continue;
+		u32 v = 0;
+		isize j = c + 2;
+		while (j < a->n && a->s[j] >= '0' && a->s[j] <= '9') v = v * 10 + (u32)(a->s[j++] - '0');
+		if (j == c + 2 || j + 1 != a->n || a->s[j] != ';' || v == 0 || v >= (u32)p->vregs.count) continue;
+		i32 k = tg_c_local_named(p, name, nlen);
+		tgType t = p->vregs.data[v];
+		if (k < 0 || t == tgType_None || t >= tgType_COUNT || p->locals.data[k].size != (p->c_ptr[v] ? 8 : tg_type_sizes[t])) continue;
+		char amp[80];
+		if (nlen > 64) continue;
+		snprintf(amp, sizeof(amp), "&%.*s", (int)nlen, name);
+		bool taken = false;
+		for (isize lk = first; lk < nl && !taken; lk++) {
+			for (char const *f = strstr(ls[lk].s, amp); f != NULL && !taken; f = strstr(f + 1, amp))
+				taken = !tg_c_idch(f[nlen + 1]);
+		}
+		if (taken) continue;
+		char by[96];
+		char const *T = p->c_ptr[v] ? "char *" : tg_c_utypes[t];
+		if (p->c_ptr[v]) snprintf(by, sizeof(by), "((char *)(uintptr_t)%.*s)", (int)nlen, name);
+		else snprintf(by, sizeof(by), "((%s)%.*s)", T, (int)nlen, name);
+		char cast[24];
+		snprintf(cast, sizeof(cast), "(%s)", T);
+		char assign[80];
+		isize alen = snprintf(assign, sizeof(assign), "\t%.*s = ", (int)nlen, name);
+		for (isize lj = la + 1; lj < nl; lj++) {
+			tgCLine *l = &ls[lj];
+			if (l->dead || strncmp(l->s, "#line", 5) == 0) continue;
+			if (l->s[0] == 'B' || !strncmp(l->s, "\tcase ", 6) || !strncmp(l->s, "\tdefault:", 9)) break;
+			isize at[64], na = tg_c_find_v(l->s, l->n, v, at, 64);
+			bool addr = na > 64;
+			for (isize q = 0; q < na && q < 64; q++) addr = addr || (at[q] > 0 && l->s[at[q] - 1] == '&');
+			if (addr) break;   // &vN: the value's own storage
+			if (na > 0) tg_c_subst(l, v, by, (isize)strlen(by), p->c_ptr[v] ? NULL : cast);
+			if (tg_c_ends_block(l) || (l->n > alen && !memcmp(l->s, assign, (usize)alen))) break;
+		}
+	}
+}
+
 // Folds the statements of the body in b from `body` on (and the declarations of what folded
 // away, from `decl` to `body`), see above.
 TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
@@ -2443,6 +2509,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	isize first = 0;   // the first body line
 	for (isize i = decl; i < body; i++) if (b->data[i] == '\n') first++;
 	tg_c_known_ifs(ls, first, nl);
+	tg_c_forward_vars(p, ls, first, nl);
 	isize nv = p->vregs.count + 1;
 	isize *uses = (isize *)calloc((usize)nv, sizeof(isize));
 	u8 *amp = (u8 *)calloc((usize)nv, 1), *gone = (u8 *)calloc((usize)nv, 1);

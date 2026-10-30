@@ -153,11 +153,37 @@ The same front end then has both: a debug build straight from tinygen in
 milliseconds, and an optimized build by handing the C to any C compiler with
 `-O2`. The C is one self-contained C99 translation unit for the target's arch
 and os: a prelude of macros with gcc/clang and MSVC branches, every data symbol,
-and one C function per procedure, with the IR values as locals, blocks as labels
-and `tyg_loc` as `#line`, so compiler messages and the debugger point at the
-front end's source. Locals and parameters that the debug info names are declared
-with their names and C types built from the debug types, so an optimized build
-shows the source variables in a debugger.
+and one C function per procedure, with `tyg_loc` as `#line`, so compiler
+messages and the debugger point at the front end's source. Locals and parameters
+that the debug info names are declared with their names and C types built from
+the debug types, so an optimized build shows the source variables in a debugger.
+
+The C reads like hand-written C rather than a dump of the IR:
+- An IR value used once in its block is printed inline in that use, and
+  constants everywhere, so statements are expressions. A load does not move
+  past a store, a call or an assignment. Values that nothing reads are dropped,
+  along with their declarations.
+- After `name = v;`, the rest of the block reads `v` as `name`, so the C reads
+  the variable the way the source does (`v = v ^ (v << 13)`). This applies to a
+  local whose address is never taken and that has the value's size.
+- `tyg_local_typed(p, type)` declares a local with its C type. A load or store
+  of the whole local is a plain assignment.
+- The structured builders `tyg_if`/`tyg_if_not`/`tyg_else`/`tyg_endif`,
+  `tyg_loop`/`tyg_break`/`tyg_continue`/`tyg_endloop` and
+  `tyg_switch_begin`/`tyg_case`/`tyg_default`/`tyg_endswitch` build the same
+  blocks and branches as hand-built ones, and the C prints them as `if`/`else`,
+  `for (;;)`, `break`, `continue` and a `switch` with its cases inside. An `if`
+  on a condition known at build time prints only the part that runs. A
+  construct that does not nest, or a break out of an outer loop, falls back to
+  labels and `goto`. A goto to the label right after it is dropped, and so is a
+  label nothing names. An entry block that is filled last is still printed
+  first.
+- `tyg_type_name(m, record, name, field_names)` gives a record a C name and
+  field names (`struct Point`, `->x`). A name already taken gets a suffix
+  (`Point_2`).
+
+These are hints only. The IR's meaning never depends on them, and the native
+backends ignore them.
 
 The C keeps the IR's meaning under an optimizing compiler: integer arithmetic is
 done in unsigned types so it wraps, shift counts are masked as the lowerings mask
@@ -183,7 +209,7 @@ a whole record (a `tyg_copy` between two places of that type becomes a struct
 assignment), `tyg_at_field(a, record, k)` for one field and
 `tyg_at_elem(a, array, i)` for one element, which also add the offset. Applied
 to an address already typed as that record or array they extend the path, so
-the C accesses `((struct tyg_r3 *)p)->f1.f0`, and the C compiler may assume, as
+the C accesses `((struct tyg_r3 *)p)->f1.f0` (or the names `tyg_type_name` gave), and the C compiler may assume, as
 C's rules let it, that accesses of different types do not alias: two paths
 alias only where one's outermost type contains the other's. So a global reached
 through a record of its own stays apart from the same type inside an array,

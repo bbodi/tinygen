@@ -203,6 +203,9 @@ check_c_names() {
 	# an entry block filled last prints first (tg_c_entry_first)
 	! sed -n '/^int64_t tg_entry_last(int64_t p0) {$/,/^}$/p' "$1" | grep -q 'goto ' ||
 		fail "cgen entry: tg_entry_last still jumps to its entry block"
+	# a variable's value read as the variable (tg_c_forward_vars): acc = acc ^ (acc << 13)
+	sed -n '/^int64_t tg_forward(int64_t p0) {$/,/^}$/p' "$1" | grep -q 'acc = .*acc) ^ .*acc) << ' ||
+		fail "cgen forward: tg_forward does not read acc as acc"
 	# no goto to the label right after it
 	! awk '/^\t*goto B[0-9]+;$/ { g = $1 " " $2; sub(/^.*goto /, "", g); sub(/;$/, "", g); next_is = g ":;"; next }
 		next_is != "" && $0 == next_is { found = 1 } { next_is = "" } END { exit !found }' "$1" ||

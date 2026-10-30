@@ -343,6 +343,19 @@ static void build_select(void) {
 		tyg_jump(p, body);
 	}
 	check(tyg_proc_end(p));
+	// int64_t tg_forward(int64_t x): a variable acc = x * 3, then acc = acc ^ (acc << 13), with
+	// the values the builder holds read as acc in the C (tg_c_forward_vars): acc + x * 3
+	p = begin("tg_forward", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
+	{
+		tyg_local acc = tyg_local_new(p, 8, 8);
+		tyg_debug_var(p, "acc", tyg_dt_base(m, "long long", 8, TYG_DT_SIGNED), tyg_at_local(acc, 0), file, 70);
+		tyg_val a = tyg_bin(p, TYG_MUL, tyg_param(p, 0), k64(p, 3));
+		tyg_store(p, TYG_I64, tyg_at_local(acc, 0), a, 0);
+		tyg_val b = tyg_bin(p, TYG_XOR, a, tyg_bin(p, TYG_SHL, a, k64(p, 13)));
+		tyg_store(p, TYG_I64, tyg_at_local(acc, 0), b, 0);
+		tyg_ret(p, tyg_bin(p, TYG_ADD, b, a));
+	}
+	check(tyg_proc_end(p));
 	// int64_t tg_switch_known(void): a switch on the constant 5, whose first test folds to a jump
 	// into the chain: 50
 	p = begin("tg_switch_known", TYG_SYM_GLOBAL, sig(ty(TYG_I64), NULL, NULL, NULL, 0));
