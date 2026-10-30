@@ -153,6 +153,27 @@ static char const tg_c_prelude[] =
 	"#define TYG_MV16(dst, src) TYG_LD_(16, dst, src)\n"
 	"#define TYG_MV32(dst, src) TYG_LD_(32, dst, src)\n"
 	"#define TYG_MV64(dst, src) TYG_LD_(64, dst, src)\n"
+	// the same as expressions: a load's value, a store of a value, which the C reads as one
+	// expression with what computes the address and the value
+	"#if defined(__TINYC__)\n"
+	"#define TYG_LOAD8(p) (*(uint8_t *)(p))\n"
+	"#define TYG_LOAD16(p) (*(uint16_t *)(p))\n"
+	"#define TYG_LOAD32(p) (*(uint32_t *)(p))\n"
+	"#define TYG_LOAD64(p) (*(uint64_t *)(p))\n"
+	"#define TYG_STORE8(p, v) (*(uint8_t *)(p) = (v))\n"
+	"#define TYG_STORE16(p, v) (*(uint16_t *)(p) = (v))\n"
+	"#define TYG_STORE32(p, v) (*(uint32_t *)(p) = (v))\n"
+	"#define TYG_STORE64(p, v) (*(uint64_t *)(p) = (v))\n"
+	"#else\n"
+	"TYG_UNUSED static __inline uint8_t TYG_LOAD8(const void *p) { uint8_t v; TYG_MEMCPY(&v, p, 1); return v; }\n"
+	"TYG_UNUSED static __inline uint16_t TYG_LOAD16(const void *p) { uint16_t v; TYG_MEMCPY(&v, p, 2); return v; }\n"
+	"TYG_UNUSED static __inline uint32_t TYG_LOAD32(const void *p) { uint32_t v; TYG_MEMCPY(&v, p, 4); return v; }\n"
+	"TYG_UNUSED static __inline uint64_t TYG_LOAD64(const void *p) { uint64_t v; TYG_MEMCPY(&v, p, 8); return v; }\n"
+	"TYG_UNUSED static __inline void TYG_STORE8(void *p, uint8_t v) { TYG_MEMCPY(p, &v, 1); }\n"
+	"TYG_UNUSED static __inline void TYG_STORE16(void *p, uint16_t v) { TYG_MEMCPY(p, &v, 2); }\n"
+	"TYG_UNUSED static __inline void TYG_STORE32(void *p, uint32_t v) { TYG_MEMCPY(p, &v, 4); }\n"
+	"TYG_UNUSED static __inline void TYG_STORE64(void *p, uint64_t v) { TYG_MEMCPY(p, &v, 8); }\n"
+	"#endif\n"
 	"#if defined(__TINYC__)\n" // TinyCC takes the gcc branch, but has no __builtin_trap, no brk and no __USER_LABEL_PREFIX__
 	"#undef TYG_TRAP\n"
 	"#define TYG_TRAP() abort()\n"
@@ -1797,6 +1818,12 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			else tg_c_printf(b, "v%u = (%s)", d, T);
 			tg_c_mem_lvalue(p, b, in->mem);
 			tg_c_puts(b, ";");
+		} else if (tg_c_scalar_bits(size) && t != tgType_F32 && t != tgType_F64) {
+			// an integer or a pointer: TYG_LOADn's value
+			if (p->c_ptr[d]) tg_c_printf(b, "v%u = (char *)(uintptr_t)TYG_LOAD%d(", d, size * 8);
+			else tg_c_printf(b, "v%u = TYG_LOAD%d(", d, size * 8);
+			tg_c_mem(p, b, in->mem);
+			tg_c_puts(b, ");");
 		} else {
 			if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_LD%d(&v%u, ", size * 8, d);
 			else tg_c_printf(b, "memcpy(&v%u, ", d);
@@ -1831,6 +1858,10 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			if (acc->kind == tgT_Ptr) tg_c_printf(b, p->c_ptr[a] ? " = (void *)v%u;" : " = (void *)(uintptr_t)v%u;", a);
 			else if (acc->kind == tgT_Int) tg_c_printf(b, " = (%s)v%u;", acc->is_signed ? S : T, a);
 			else tg_c_printf(b, " = v%u;", a);
+		} else if (tg_c_scalar_bits(size) && t != tgType_F32 && t != tgType_F64) {
+			tg_c_printf(b, "TYG_STORE%d(", size * 8);
+			tg_c_mem(p, b, in->mem);
+			tg_c_printf(b, p->c_ptr[a] ? ", (uint64_t)(uintptr_t)v%u);" : ", v%u);", a);
 		} else {
 			if (tg_c_scalar_bits(size)) tg_c_printf(b, "TYG_ST%d(", size * 8);
 			else tg_c_puts(b, "memcpy(");
@@ -2144,7 +2175,9 @@ TG_INTERNAL bool tg_c_has_call(char const *s, isize n) {
 		while (j < n && tg_c_idch(s[j])) j++;
 		if (j < n && s[j] == '(' && !(s[i] >= '0' && s[i] <= '9')) {
 			isize len = j - i;
-			if (!((len == 8 && !memcmp(s + i, "UINT64_C", 8)) || (len == 7 && !memcmp(s + i, "INT64_C", 7)))) return true;
+			// TYG_LOADn reads memory (tg_c_pure says so), and writes none
+			bool load = len >= 9 && len <= 10 && !memcmp(s + i, "TYG_LOAD", 8);
+			if (!load && !((len == 8 && !memcmp(s + i, "UINT64_C", 8)) || (len == 7 && !memcmp(s + i, "INT64_C", 7)))) return true;
 		}
 		i = j;
 	}
