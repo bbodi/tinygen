@@ -237,6 +237,43 @@ static void build_select(void) {
 		tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0));
 	}
 	check(tyg_proc_end(p));
+	// int64_t tg_switch_body(int64_t x): a switch with its bodies (tyg_switch_begin):
+	//   s = 0; i = 0; for (;;) { if (!(i < x)) break; v = i % 5; i += 1; switch (v) { case 0: case 2:
+	//   s += 1; break; case 1: s += 10; if (s > 100) <break out of the loop>; break; case 3: continue;
+	//   default: s += 1000; } s += 5; } return s;
+	p = begin("tg_switch_body", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
+	{
+		tyg_local ls = tyg_local_typed(p, ty(TYG_I64)), li = tyg_local_typed(p, ty(TYG_I64));
+		tyg_val x = tyg_param(p, 0);
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), k64(p, 0), 0);
+		tyg_store(p, TYG_I64, tyg_at_local(li, 0), k64(p, 0), 0);
+		tyg_loop(p);
+		tyg_val i = tyg_load(p, TYG_I64, tyg_at_local(li, 0), 0);
+		tyg_if_not(p, tyg_cmp(p, TYG_SLT, i, x));
+		tyg_break(p, 0);
+		tyg_endif(p);
+		tyg_val v = tyg_bin(p, TYG_SREM, i, k64(p, 5));
+		tyg_store(p, TYG_I64, tyg_at_local(li, 0), tyg_bin(p, TYG_ADD, i, k64(p, 1)), 0);
+		int64_t vals[4] = { 0, 2, 1, 3 };
+		int cases[4] = { 0, 0, 1, 2 };
+		tyg_switch_begin(p, v, 4, vals, cases, 3);
+		tyg_case(p, 0);
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 1)), 0);
+		tyg_case(p, 1);
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 10)), 0);
+		tyg_if(p, tyg_cmp(p, TYG_SGT, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 100)));
+		tyg_break(p, 0);
+		tyg_endif(p);
+		tyg_case(p, 2);
+		tyg_continue(p, 0);
+		tyg_default(p);
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 1000)), 0);
+		tyg_endswitch(p);
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 5)), 0);
+		tyg_endloop(p);
+		tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0));
+	}
+	check(tyg_proc_end(p));
 	// int64_t tg_entry_last(int64_t x): the entry jumps to a block filled last, which sets a local
 	// to 40 and jumps back to the body: x + 40, printed in order with no goto
 	p = begin("tg_entry_last", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
@@ -250,6 +287,22 @@ static void build_select(void) {
 		tyg_block_set(p, late);
 		tyg_store(p, TYG_I64, tyg_at_local(l, 0), k64(p, 40), 0);
 		tyg_jump(p, body);
+	}
+	check(tyg_proc_end(p));
+	// int64_t tg_switch_known(void): a switch on the constant 5, whose first test folds to a jump
+	// into the chain: 50
+	p = begin("tg_switch_known", TYG_SYM_GLOBAL, sig(ty(TYG_I64), NULL, NULL, NULL, 0));
+	{
+		int64_t vals[3] = { 0, 5, 9 };
+		tyg_block t[3], def = tyg_block_new(p);
+		for (int k = 0; k < 3; k++) t[k] = tyg_block_new(p);
+		tyg_switch(p, k64(p, 5), 3, vals, t, def);
+		for (int k = 0; k < 3; k++) {
+			tyg_block_set(p, t[k]);
+			tyg_ret(p, k64(p, 10 * vals[k]));
+		}
+		tyg_block_set(p, def);
+		tyg_ret(p, k64(p, -1));
 	}
 	check(tyg_proc_end(p));
 	// int32_t tg_switch8(int8_t x): x * 2 for 1 and 2 (one target), 7 for -1, x else

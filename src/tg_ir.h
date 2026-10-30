@@ -521,6 +521,8 @@ typedef struct tgBlock {
 	i32           sw;    // 1 + the index of the tgSwitch whose chain of tests this block's branch begins, 0: none
 	i32           s_else, s_end, s_head; // 1 + the tgStruct whose else part, end (an if's join, a
 	                                     // loop's exit) or loop body starts here, 0: none
+	bool          sw_chain;              // a later test of a tyg_switch's chain: not printed in C
+	i32           s_case;                // 1 + the switch (tyg_switch_begin) whose case or default body starts here
 } tgBlock;
 
 // A structured construct (tyg_if, tyg_loop), for the C output. An if: its branch ends the block
@@ -529,7 +531,8 @@ typedef struct tgBlock {
 // body starts at `head`, its exit is `end`. Its jumps carry tgInstrFlag_Struct, b = 1 + its index,
 // and imm2 in c: 1 to fall off (none printed), 2 a break, 3 a continue.
 typedef struct tgStruct {
-	u8  loop, known, neg;   // neg: an if on cond being 0 (tyg_if_not)
+	u8  loop, known, neg;   // loop: 0 an if, 1 a loop, 2 a switch; neg: an if on cond being 0 (tyg_if_not)
+	i32 sw;                 // a switch: 1 + its tgSwitch, whose targets are its cases and default
 	u32 cond;
 	i32 at, then_, else_, end, head;
 	bool broken; // the blocks were not placed as it nests: printed with labels and gotos
@@ -543,6 +546,9 @@ typedef struct tgSwitch {
 	u32 v;
 	i32 first, n;
 	i32 def;
+	i32 st;   // 1 + the tgStruct of the tyg_switch_begin it is, 0: a tyg_switch alone
+	i32 at;   // the block whose branch begins the chain
+	i32 chain, nchain; // the chain's later tests: blocks chain .. chain + nchain - 1
 } tgSwitch;
 
 TG_ARRAY(tgSwitchArray, tgSwitch);

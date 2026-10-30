@@ -1043,7 +1043,7 @@ TG_INTERNAL void tg_s_flag(tgProc *p, i32 s, u32 kind) {
 TG_INTERNAL i32 tg_s_find(tgProc *p, bool loop, int depth, char const *who) {
 	for (isize i = p->s_open.count - 1; i >= 0; i--) {
 		i32 s = p->s_open.data[i];
-		if (p->structs.data[s].loop != loop) continue;
+		if (p->structs.data[s].loop != (u8)(loop ? 1 : 0)) continue;
 		if (depth-- == 0) return s;
 	}
 	tg_fail(p, who);
@@ -1151,7 +1151,11 @@ void tyg_break(tyg_proc *p, int depth) {
 	i32 s = tg_s_find(p, true, depth, "tyg_break: no loop that deep");
 	if (s < 0 || tg_curr_terminated(p)) return;
 	tg_jump(p, p->blocks.data[p->structs.data[s].end]);
-	if (depth == 0) tg_s_flag(p, s, 2);   // an outer loop's: a goto
+	// an outer loop's, or one past a switch (whose break C's would leave): a goto
+	bool past_switch = false;
+	for (isize i = p->s_open.count - 1; i >= 0 && p->s_open.data[i] != s; i--)
+		past_switch = past_switch || p->structs.data[p->s_open.data[i]].loop == 2;
+	if (depth == 0 && !past_switch) tg_s_flag(p, s, 2);
 }
 
 void tyg_continue(tyg_proc *p, int depth) {
@@ -1165,7 +1169,7 @@ void tyg_continue(tyg_proc *p, int depth) {
 void tyg_endloop(tyg_proc *p) {
 	if (!tg_b_ok(p)) return;
 	i32 s = p->s_open.count > 0 ? p->s_open.data[p->s_open.count - 1] : -1;
-	if (s < 0 || !p->structs.data[s].loop) {
+	if (s < 0 || p->structs.data[s].loop != 1) {
 		tg_fail(p, "tyg_endloop: no tyg_loop open");
 		return;
 	}
@@ -1174,6 +1178,108 @@ void tyg_endloop(tyg_proc *p) {
 		tg_jump(p, p->blocks.data[p->structs.data[s].head]);
 		tg_s_flag(p, s, 1);
 	}
+	tyg_block_set(p, p->structs.data[s].end);
+}
+
+void tyg_switch_begin(tyg_proc *p, tyg_val v, int n, const int64_t *values, const int *cases, int ncases) {
+	tgStruct st;
+	if (!tg_b_ok(p)) return;
+	if (ncases < 1 || cases == NULL) {
+		tg_fail(p, "tyg_switch_begin: at least one case");
+		return;
+	}
+	for (int i = 0; i < n; i++)
+		if (cases[i] < 0 || cases[i] >= ncases) {
+			tg_fail(p, "tyg_switch_begin: a value's case out of range");
+			return;
+		}
+	memset(&st, 0, sizeof(st));
+	st.loop = 2;
+	st.at = p->curr->index;
+	st.else_ = -1;
+	tyg_block *bodies = tg_alloc_items(tyg_block, ncases + 1), *targets = tg_alloc_items(tyg_block, n + 1);
+	for (int k = 0; k < ncases; k++) bodies[k] = tyg_block_new(p);
+	tyg_block def = tyg_block_new(p), end = tyg_block_new(p);
+	for (int i = 0; i < n; i++) targets[i] = bodies[cases[i]];
+	st.broken = tg_curr_terminated(p);
+	st.then_ = bodies[0];
+	st.head = def;   // the default's body
+	st.end = end;
+	i32 s = (i32)p->structs.count;
+	if (!st.broken && n == 0) {
+		tg_jump(p, p->blocks.data[def]);
+		st.broken = true;
+	} else if (!st.broken) {
+		tyg_switch(p, v, n, values, targets, def);
+		st.sw = (i32)p->switches.count;
+		p->switches.data[st.sw - 1].st = s + 1;
+	}
+	for (int k = 0; k < ncases; k++) p->blocks.data[bodies[k]]->s_case = s + 1;
+	p->blocks.data[def]->s_case = s + 1;
+	// the cases' bodies, for tyg_case: kept in the procedure's arena with the struct
+	tg_array_add(&p->structs, st);
+	tg_array_add(&p->s_open, s);
+	tg_array_add(&p->sw_targets, (i32)ncases);
+	for (int k = 0; k < ncases; k++) tg_array_add(&p->sw_targets, (i32)bodies[k]);
+	p->structs.data[s].cond = (u32)(p->sw_targets.count - ncases - 1);   // where they start
+	p->blocks.data[end]->s_end = s + 1;
+	// the code between tyg_switch_begin and the first tyg_case is unreachable
+	tyg_block dead = tyg_block_new(p);
+	p->blocks.data[dead]->sw_chain = true;   // not printed, as the chain
+	tyg_block_set(p, dead);
+}
+
+// The switch open innermost, or -1 failing p.
+TG_INTERNAL i32 tg_s_switch(tgProc *p, char const *who) {
+	i32 s = p->s_open.count > 0 ? p->s_open.data[p->s_open.count - 1] : -1;
+	if (s < 0 || p->structs.data[s].loop != 2) {
+		tg_fail(p, who);
+		return -1;
+	}
+	return s;
+}
+
+// Ends the body before a case's: falling off it leaves the switch.
+TG_INTERNAL void tg_s_case_end(tgProc *p, i32 s) {
+	if (!tg_curr_terminated(p)) {
+		tg_jump(p, p->blocks.data[p->structs.data[s].end]);
+		tg_s_flag(p, s, 1);
+	}
+}
+
+void tyg_case(tyg_proc *p, int k) {
+	if (!tg_b_ok(p)) return;
+	i32 s = tg_s_switch(p, "tyg_case: no tyg_switch_begin open");
+	if (s < 0) return;
+	i32 at = (i32)p->structs.data[s].cond;
+	if (k < 0 || k >= p->sw_targets.data[at]) {
+		tg_fail(p, "tyg_case: no such case");
+		return;
+	}
+	tg_s_case_end(p, s);
+	tyg_block_set(p, p->sw_targets.data[at + 1 + k]);
+}
+
+void tyg_default(tyg_proc *p) {
+	if (!tg_b_ok(p)) return;
+	i32 s = tg_s_switch(p, "tyg_default: no tyg_switch_begin open");
+	if (s < 0) return;
+	tg_s_case_end(p, s);
+	tyg_block_set(p, p->structs.data[s].head);
+}
+
+void tyg_endswitch(tyg_proc *p) {
+	if (!tg_b_ok(p)) return;
+	i32 s = tg_s_switch(p, "tyg_endswitch: no tyg_switch_begin open");
+	if (s < 0) return;
+	// a default never started: none of the values, which leaves the switch
+	tgBlock *def = p->blocks.data[p->structs.data[s].head];
+	if (!def->placed) {
+		tg_s_case_end(p, s);
+		tyg_block_set(p, def->index);
+	}
+	tg_s_case_end(p, s);
+	p->s_open.count--;
 	tyg_block_set(p, p->structs.data[s].end);
 }
 
@@ -1191,10 +1297,14 @@ void tyg_switch(tyg_proc *p, tyg_val v, int n, const int64_t *values, const tyg_
 		if (!tg_block_check(p, targets[i])) return;
 	if (!tg_block_check(p, def) || tg_curr_terminated(p)) return;
 	tgSwitch sw;
+	memset(&sw, 0, sizeof(sw));
 	sw.v = v;
 	sw.first = (i32)p->sw_values.count;
 	sw.n = n;
 	sw.def = def;
+	sw.at = p->curr->index;
+	sw.chain = (i32)p->blocks.count;   // the blocks the chain creates next
+	sw.nchain = n - 1;
 	for (int i = 0; i < n; i++) {
 		tg_array_add(&p->sw_values, tg_fold_norm(t, values[i]));
 		tg_array_add(&p->sw_targets, (i32)targets[i]);
@@ -1205,7 +1315,10 @@ void tyg_switch(tyg_proc *p, tyg_val v, int n, const int64_t *values, const tyg_
 		tyg_val eq = tyg_cmp(p, TYG_EQ, v, tyg_iconst(p, tg_public_scalar(t), values[i]));
 		tyg_block next = i + 1 < n ? tyg_block_new(p) : def;
 		tyg_branch(p, eq, targets[i], next);
-		if (i + 1 < n) tyg_block_set(p, next);
+		if (i + 1 < n) {
+			p->blocks.data[next]->sw_chain = true;
+			tyg_block_set(p, next);
+		}
 	}
 }
 

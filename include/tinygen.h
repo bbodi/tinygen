@@ -389,6 +389,15 @@ void tyg_loop(tyg_proc *p);
 void tyg_break(tyg_proc *p, int depth);
 void tyg_continue(tyg_proc *p, int depth);
 void tyg_endloop(tyg_proc *p);
+/* A switch whose bodies follow, printed in C as a switch with them inside: on v, each of the n
+   values going to case cases[i] (0 .. ncases - 1; several values may share one). tyg_case(k)
+   starts case k's body, tyg_default the default's (where v is none of the values), tyg_endswitch
+   the code after the switch; falling off a body goes there (C: break). Built as tyg_switch's chain;
+   a tyg_break of a loop from inside it is a goto in C. */
+void tyg_switch_begin(tyg_proc *p, tyg_val v, int n, const int64_t *values, const int *cases, int ncases);
+void tyg_case(tyg_proc *p, int k);
+void tyg_default(tyg_proc *p);
+void tyg_endswitch(tyg_proc *p);
 /* To targets[i] where the integer v equals values[i], else to def. Built as a chain of equality
    tests, which the C output prints as one C switch on v; the values are distinct, n >= 1. */
 void tyg_switch(tyg_proc *p, tyg_val v, int n, const int64_t *values, const tyg_block *targets,

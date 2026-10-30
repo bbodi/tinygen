@@ -187,6 +187,13 @@ check_c_names() {
 		printf '%s\n' "$body" | grep -qF "$decl" || fail "cgen structured: tg_struct has no '$decl'"
 	done
 	[ "$(printf '%s\n' "$body" | grep -c 'goto ')" = 1 ] || fail "cgen structured: tg_struct has other gotos than the outer break"
+	# a switch with its bodies (tyg_switch_begin): cases inside, break and continue; the break out
+	# of the loop from inside it is the one goto
+	body=$(sed -n '/^int64_t tg_switch_body(int64_t p0) {$/,/^}$/p' "$1")
+	for decl in '	switch (' '	case 0ULL:' '	case 2ULL:' '	default:' '	break;' '	continue;'; do
+		printf '%s\n' "$body" | grep -qF "$decl" || fail "cgen switch body: tg_switch_body has no '$decl'"
+	done
+	[ "$(printf '%s\n' "$body" | grep -c 'goto ')" = 1 ] || fail "cgen switch body: tg_switch_body has other gotos than the break out of the loop"
 	# an entry block filled last prints first (tg_c_entry_first)
 	! sed -n '/^int64_t tg_entry_last(int64_t p0) {$/,/^}$/p' "$1" | grep -q 'goto ' ||
 		fail "cgen entry: tg_entry_last still jumps to its entry block"

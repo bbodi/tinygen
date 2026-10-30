@@ -1782,8 +1782,20 @@ TG_INTERNAL void tg_c_structs(tgProc *p) {
 	isize n = 0;
 	for (isize s = 0; s < ns; s++) {
 		tgStruct *st = &p->structs.data[s];
-		i32 at = pos[st->at], start = pos[st->loop ? st->head : st->then_], end = pos[st->end];
+		i32 at = pos[st->at], start = pos[st->loop == 1 ? st->head : st->then_], end = pos[st->end];
 		i32 el = st->else_ >= 0 ? pos[st->else_] : -1;
+		if (st->loop == 2 && !st->broken && at >= 0 && start > at) {
+			// a switch: only its chain between it and its first body, every body inside it
+			for (i32 q = at + 1; q < start; q++) if (!p->order.data[q]->sw_chain) st->broken = true;
+			tgSwitch const *sw = st->sw ? &p->switches.data[st->sw - 1] : NULL;
+			if (sw == NULL) st->broken = true;
+			for (i32 k = 0; sw != NULL && k < sw->n; k++) {
+				i32 q = pos[p->sw_targets.data[sw->first + k]];
+				if (q < start || q >= end) st->broken = true;
+			}
+			if (pos[st->head] < start || pos[st->head] >= end) st->broken = true;
+			start = at + 1;   // its jumps may lie in the chain's unreachable block
+		}
 		if (at < 0 || start != at + 1 || end < 0 || end <= start || (st->else_ >= 0 && (el <= start || el >= end)))
 			st->broken = true;
 		if (st->broken) continue;
@@ -1809,7 +1821,7 @@ TG_INTERNAL void tg_c_structs(tgProc *p) {
 		tgInstr const *in = &blk->instrs.data[blk->instrs.count - 1];
 		if (!(in->flags & tgInstrFlag_Struct) || in->b == 0 || in->b > (u32)ns) continue;
 		tgStruct *st = &p->structs.data[in->b - 1];
-		i32 lo = pos[st->loop ? st->head : st->then_] - 1, hi = pos[st->end];
+		i32 lo = st->loop == 2 ? pos[st->at] : pos[st->loop == 1 ? st->head : st->then_] - 1, hi = pos[st->end];
 		if ((i32)bi < lo || (i32)bi >= hi) st->broken = true;
 	}
 }
@@ -2076,7 +2088,7 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	case tgOp_Jump:
 		if (!tg_c_s_live(p, in)) tg_c_printf(b, "goto B%d;", (int)in->imm);
 		else if (in->c == 0) tg_c_printf(b, "if (%d) {", p->structs.data[in->b - 1].known == 2);   // an if on a known condition
-		else if (in->c == 2) tg_c_puts(b, "break;");
+		else if (in->c == 2 || (in->c == 1 && p->structs.data[in->b - 1].loop == 2)) tg_c_puts(b, "break;");
 		else if (in->c == 3) tg_c_puts(b, "continue;");
 		else b->count--;   // falls off: no statement (the tab goes)
 		break;
@@ -2423,12 +2435,19 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 			free(by);
 			continue;
 		}
+		if (uses[v] == 1 && tg_c_pure(expr, elen)) {   // never read (a switch's first test): it goes
+			ls[li].dead = true;
+			gone[v] = 1;
+			free(by);
+			continue;
+		}
 		if (uses[v] != 2) { free(by); continue; }
 		bool pure = tg_c_pure(expr, elen), found = false;
 		isize lj = li + 1;
 		for (; lj < nl; lj++) {
 			if (ls[lj].dead || strncmp(ls[lj].s, "#line", 5) == 0) continue;
-			if (ls[lj].s[0] == 'B') break;   // a label: another block
+			if (ls[lj].s[0] == 'B' || !strncmp(ls[lj].s, "\tcase ", 6) || !strncmp(ls[lj].s, "\tdefault:", 9))
+				break;   // a label: another block
 			isize at[1];
 			if (tg_c_find_v(ls[lj].s, ls[lj].n, v, at, 1) > 0) { found = true; break; }
 			if (tg_c_ends_block(&ls[lj])) break;
@@ -2476,14 +2495,25 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	// construct's jump that falls off left an empty line
 	b->count = decl;
 	isize depth = 0;
+	u8 incase[64] = { 0 };   // per depth: past a case label, whose statements go one further in
 	for (isize li = 0; li < nl; li++) {
 		tgCLine const *l = &ls[li];
 		bool keep = !l->dead && (li < first || l->n > 1 || (l->n == 1 && l->s[0] != '\t'));
 		if (keep && li >= first && l->n > 0) {
 			bool closes = l->n >= 2 && l->s[0] == '\t' && l->s[1] == '}';
-			if (closes && depth > 0) depth--;
-			if (l->s[0] == '\t') for (isize d = 0; d < depth; d++) tg_array_add(b, (u8)'\t');
-			if (l->s[l->n - 1] == '{') depth++;
+			bool label = !strncmp(l->s, "\tcase ", 6) || !strncmp(l->s, "\tdefault:", 9);
+			if (closes && depth > 0) {
+				if (depth < 64) incase[depth] = 0;
+				depth--;
+			}
+			isize in = depth;   // and one for each case label it is inside, this depth's not for a label
+			for (isize d = 0; d <= depth && d < 64; d++) in += (d < depth || !label) ? incase[d] : 0;
+			if (l->s[0] == '\t') for (isize d = 0; d < in; d++) tg_array_add(b, (u8)'\t');
+			if (label && depth < 64) incase[depth] = 1;
+			if (l->s[l->n - 1] == '{') {
+				depth++;
+				if (depth < 64) incase[depth] = 0;
+			}
 		}
 		if (keep && (li < first || l->n > 0)) {
 			tg_array_add_elems(b, (u8 const *)l->s, l->n);
@@ -2565,6 +2595,15 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		tg_c_puts(&b, ";\n");
 	}
 	tg_c_entry_first(p);
+	// a switch whose first test folded to a jump (a known value) is not printed as one: its chain is
+	for (isize i = 0; i < p->switches.count; i++) {
+		tgSwitch *sw = &p->switches.data[i];
+		tgBlock const *at = p->blocks.data[sw->at];
+		bool printed = at->instrs.count > 0 && at->instrs.data[at->instrs.count - 1].op == tgOp_Branch;
+		if (printed) continue;
+		for (i32 k = 0; k < sw->nchain; k++) p->blocks.data[sw->chain + k]->sw_chain = false;
+		if (sw->st) p->structs.data[sw->st - 1].broken = true;
+	}
 	tg_c_structs(p);
 	// a label for each block a jump reaches, -Wall warns of the others; tg_end_proc made sure
 	// that those are placed. The blocks that are not hold dead code.
@@ -2575,6 +2614,9 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		tgInstr const *last = blk->instrs.count > 0 ? &blk->instrs.data[blk->instrs.count - 1] : NULL;
 		bool swb = blk->sw != 0 && last != NULL && last->op == tgOp_Branch;   // printed as the switch
 		if (last != NULL && tg_c_s_live(p, last)) continue;   // a construct's: no label
+		if (blk->sw_chain) continue;   // not printed
+		if (swb && p->switches.data[blk->sw - 1].st && !p->structs.data[p->switches.data[blk->sw - 1].st - 1].broken)
+			continue;   // a switch with its bodies inside: case labels
 		if (!swb && last != NULL && (last->op == tgOp_Jump || last->op == tgOp_Branch)) target[last->imm] = true;
 		if (!swb && last != NULL && last->op == tgOp_Branch) target[last->c] = true;
 		if (swb) {
@@ -2591,9 +2633,20 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 			tg_fail(p, "C output: a block does not end in a terminator");
 			break;
 		}
+		if (blk->sw_chain) continue;   // a later test of a switch's chain: the switch has its case
 		// a construct's end and else part close what it opened; a loop's body opens
 		if (blk->s_end && !p->structs.data[blk->s_end - 1].broken) tg_c_puts(&b, "\t}\n");
 		if (blk->s_else && !p->structs.data[blk->s_else - 1].broken) tg_c_puts(&b, "\t} else {\n");
+		if (blk->s_case && !p->structs.data[blk->s_case - 1].broken) {
+			tgStruct const *st = &p->structs.data[blk->s_case - 1];
+			tgSwitch const *sw = &p->switches.data[st->sw - 1];
+			i32 size = tg_type_size(p->vregs.data[sw->v]);
+			u64 mask = size >= 8 ? ~(u64)0 : ((u64)1 << (size * 8)) - 1;
+			for (i32 k = 0; k < sw->n; k++)
+				if (p->sw_targets.data[sw->first + k] == blk->index)
+					tg_c_printf(&b, "\tcase %lluULL:\n", (unsigned long long)((u64)p->sw_values.data[sw->first + k] & mask));
+			if (st->head == blk->index) tg_c_puts(&b, "\tdefault:\n");
+		}
 		if (target[blk->index]) tg_c_printf(&b, "B%d:;\n", blk->index);
 		if (blk->s_head && !p->structs.data[blk->s_head - 1].broken) tg_c_puts(&b, "\tfor (;;) {\n");
 		isize ni = blk->instrs.count;
@@ -2601,7 +2654,15 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		// A tyg_switch's first test: the whole chain as a switch, the later tests left unreached.
 		bool sw = blk->sw != 0 && last != NULL && last->op == tgOp_Branch;
 		for (isize ii = 0; ii < ni - (sw ? 1 : 0); ii++) tg_c_instr(p, &b, &blk->instrs.data[ii], &line, &file);
-		if (sw) tg_c_switch(p, &b, &p->switches.data[blk->sw - 1]);
+		if (sw) {
+			tgSwitch const *swi = &p->switches.data[blk->sw - 1];
+			if (swi->st && !p->structs.data[swi->st - 1].broken) {
+				char iv[32];
+				tg_c_printf(&b, "\tswitch (%s) {\n", tg_c_int(p, swi->v, iv));
+			} else {
+				tg_c_switch(p, &b, swi);
+			}
+		}
 	}
 	if (p->fail_reason == NULL && !p->c_returns_twice) tg_c_fold(p, &b, decl, body);
 	tg_c_puts(&b, "}\n");
