@@ -178,7 +178,7 @@ check_c_names() {
 		grep -q "$decl" "$1" || fail "cgen typed locals: no line matches $decl"
 	done
 	# expressions (tg_c_fold): tg_typed_locals returns one expression of its locals and constants
-	grep -q '^	return (int64_t).*(uint64_t)l[0-9]*) \* (uint64_t)UINT64_C(0x3e8).*(double)l[0-9]*.*(uint32_t)l[0-9]*)*;$' "$1" ||
+	grep -q '^	return (int64_t).*l[0-9]*) \* UINT64_C(0x3e8).*(double)l[0-9]*.*(uint32_t)l[0-9]*)*;$' "$1" ||
 		fail "cgen expressions: tg_typed_locals does not return one expression"
 	# tyg_switch: one C switch, its cases and default
 	grep -q '^	switch (.*) { case 0ULL: goto B[0-9]*; case 5ULL: goto B[0-9]*; case 18446744073709551613ULL: goto B[0-9]*; case 9223372036854775808ULL: goto B[0-9]*; default: goto B[0-9]*; }$' "$1" ||

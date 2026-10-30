@@ -2189,17 +2189,20 @@ TG_INTERNAL isize tg_c_find_v(char const *s, isize n, u32 v, isize *at, isize ma
 	return c;
 }
 
-// Replaces the token vN in the line by `by`.
-TG_INTERNAL void tg_c_subst(tgCLine *l, u32 v, char const *by, isize blen) {
+// Replaces the token vN in the line by `by`; where `cast`, by's own type as a cast "(T)", stands
+// right before the token, it goes: by has that type already.
+TG_INTERNAL void tg_c_subst(tgCLine *l, u32 v, char const *by, isize blen, char const *cast) {
 	isize at[64], k = tg_c_find_v(l->s, l->n, v, at, 64);
 	char name[16];
 	isize len = snprintf(name, sizeof(name), "v%u", v);
 	if (k > 64) k = 64;
 	isize n = l->n + k * (blen - len);
 	char *s = (char *)malloc((usize)n + 1), *o = s;
-	isize prev = 0;
+	isize prev = 0, cl = cast ? (isize)strlen(cast) : 0;
 	for (isize i = 0; i < k; i++) {
-		memcpy(o, l->s + prev, (usize)(at[i] - prev)); o += at[i] - prev;
+		isize upto = at[i];
+		if (cl > 0 && upto - prev >= cl && !memcmp(l->s + upto - cl, cast, (usize)cl)) upto -= cl;
+		memcpy(o, l->s + prev, (usize)(upto - prev)); o += upto - prev;
 		memcpy(o, by, (usize)blen); o += blen;
 		prev = at[i] + len;
 	}
@@ -2263,9 +2266,13 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		else if (typed || (p->c_ptr[v] && expr[0] == '(')) snprintf(by, (usize)elen + 64, "(%.*s)", (int)elen, expr);
 		else snprintf(by, (usize)elen + 64, "((%s)(%.*s))", T, (int)elen, expr);
 		isize blen = (isize)strlen(by);
+		// by's type as a cast, when by has it for certain: a cast to it, or a 64-bit constant
+		char cast[24] = "";
+		if (typed || (konst && wide && t == tgType_I64 && expr[0] == 'U') || (konst && t == tgType_I32))
+			snprintf(cast, sizeof(cast), "(%s)", T);
 		if (konst) {
 			for (isize lj = first; lj < nl; lj++)
-				if (lj != li && !ls[lj].dead) tg_c_subst(&ls[lj], v, by, blen);
+				if (lj != li && !ls[lj].dead) tg_c_subst(&ls[lj], v, by, blen, cast[0] ? cast : NULL);
 			ls[li].dead = true;
 			gone[v] = 1;
 			free(by);
@@ -2285,7 +2292,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 			if (!pure && (tg_c_def_line(&ls[lj], &e2, &l2) == 0 || tg_c_has_call(e2, l2))) break;
 		}
 		if (found) {
-			tg_c_subst(&ls[lj], v, by, blen);
+			tg_c_subst(&ls[lj], v, by, blen, cast[0] ? cast : NULL);
 			ls[li].dead = true;
 			gone[v] = 1;
 		}
