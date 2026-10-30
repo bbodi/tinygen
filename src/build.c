@@ -294,6 +294,7 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 	p->s_open.arena = tg_arena();
 	p->sw_values.arena = tg_arena();
 	p->sw_targets.arena = tg_arena();
+	p->sw_bodies.arena = tg_arena();
 	p->locals.arena = tg_arena();
 	p->calls.arena = tg_arena();
 	p->params_in.arena = tg_arena();
@@ -1219,9 +1220,9 @@ void tyg_switch_begin(tyg_proc *p, tyg_val v, int n, const int64_t *values, cons
 	// the cases' bodies, for tyg_case: kept in the procedure's arena with the struct
 	tg_array_add(&p->structs, st);
 	tg_array_add(&p->s_open, s);
-	tg_array_add(&p->sw_targets, (i32)ncases);
-	for (int k = 0; k < ncases; k++) tg_array_add(&p->sw_targets, (i32)bodies[k]);
-	p->structs.data[s].cond = (u32)(p->sw_targets.count - ncases - 1);   // where they start
+	tg_array_add(&p->sw_bodies, (i32)ncases);
+	for (int k = 0; k < ncases; k++) tg_array_add(&p->sw_bodies, (i32)bodies[k]);
+	p->structs.data[s].cond = (u32)(p->sw_bodies.count - ncases - 1);   // where they start
 	p->blocks.data[end]->s_end = s + 1;
 	// the code between tyg_switch_begin and the first tyg_case is unreachable
 	tyg_block dead = tyg_block_new(p);
@@ -1252,12 +1253,12 @@ void tyg_case(tyg_proc *p, int k) {
 	i32 s = tg_s_switch(p, "tyg_case: no tyg_switch_begin open");
 	if (s < 0) return;
 	i32 at = (i32)p->structs.data[s].cond;
-	if (k < 0 || k >= p->sw_targets.data[at]) {
+	if (k < 0 || k >= p->sw_bodies.data[at]) {
 		tg_fail(p, "tyg_case: no such case");
 		return;
 	}
 	tg_s_case_end(p, s);
-	tyg_block_set(p, p->sw_targets.data[at + 1 + k]);
+	tyg_block_set(p, p->sw_bodies.data[at + 1 + k]);
 }
 
 void tyg_default(tyg_proc *p) {

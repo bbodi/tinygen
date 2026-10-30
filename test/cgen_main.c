@@ -40,7 +40,7 @@ double tg_uitof_64_64(int64_t); float tg_uitof_32_32(int32_t); int8_t tg_ftosi_3
 int64_t tg_ftoui_64_64(double); int32_t tg_ftoui_64_32(double); double tg_fext(float); float tg_ftrunc(double);
 int64_t tg_bitcast_f64_i64(double); float tg_bitcast_i32_f32(int32_t); int64_t tg_select(int32_t, int64_t, int64_t); double tg_fconsts(int32_t);
 int64_t tg_switch(int64_t); int32_t tg_switch8(int8_t); int64_t tg_typed_locals(int64_t, int64_t *);
-int64_t tg_struct(int64_t); int64_t tg_switch_known(void); int64_t tg_entry_last(int64_t); int64_t tg_switch_body(int64_t);
+int64_t tg_struct(int64_t); int64_t tg_switch_known(void); int64_t tg_two_switches(int64_t); int64_t tg_entry_last(int64_t); int64_t tg_switch_body(int64_t);
 extern int32_t tg_counter;
 int32_t tg_volatile(int32_t *, int32_t); int64_t tg_mem(const int64_t *); void tg_fill(char *, const char *, int32_t, int64_t);
 int32_t tg_trap_if(int32_t); void tg_store_void(int64_t *, int64_t); char *tg_ptr_add(char *, int64_t);
@@ -209,6 +209,10 @@ static void check_conversions(void) {
 	}
 	EQ(tg_entry_last(2), 42);
 	EQ(tg_switch_known(), 50);
+	EQ(tg_two_switches(1), 210);
+	EQ(tg_two_switches(2), 20);
+	EQ(tg_two_switches(3), 100);
+	EQ(tg_two_switches(4), 0);
 	for (int64_t x = 0; x < 30; x++) {
 		int64_t s = 0;
 		for (int64_t i = 0; i < x; i++) {

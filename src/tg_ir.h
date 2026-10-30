@@ -718,6 +718,7 @@ struct tyg_proc {
 	tgI32Array        s_open;     // the constructs open, innermost last
 	tgI64Array        sw_values;
 	tgI32Array        sw_targets;
+	tgI32Array        sw_bodies;  // tyg_switch_begin's: each switch's count of cases, then its bodies
 	tgBlock *         curr;
 	tgTypeArray       vregs;   // vreg 0 is no value
 	tgVregInfoArray   vinfo;
