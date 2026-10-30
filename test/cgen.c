@@ -237,6 +237,21 @@ static void build_select(void) {
 		tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0));
 	}
 	check(tyg_proc_end(p));
+	// int64_t tg_entry_last(int64_t x): the entry jumps to a block filled last, which sets a local
+	// to 40 and jumps back to the body: x + 40, printed in order with no goto
+	p = begin("tg_entry_last", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
+	{
+		tyg_block late = tyg_block_new(p), body = tyg_block_new(p);
+		tyg_local l = tyg_local_typed(p, ty(TYG_I64));
+		tyg_val x = tyg_param(p, 0);
+		tyg_jump(p, late);
+		tyg_block_set(p, body);
+		tyg_ret(p, tyg_bin(p, TYG_ADD, x, tyg_load(p, TYG_I64, tyg_at_local(l, 0), 0)));
+		tyg_block_set(p, late);
+		tyg_store(p, TYG_I64, tyg_at_local(l, 0), k64(p, 40), 0);
+		tyg_jump(p, body);
+	}
+	check(tyg_proc_end(p));
 	// int32_t tg_switch8(int8_t x): x * 2 for 1 and 2 (one target), 7 for -1, x else
 	p = begin("tg_switch8", TYG_SYM_GLOBAL, sig(ty(TYG_I32), ty(TYG_I8), NULL, NULL, 0));
 	{

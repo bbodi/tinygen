@@ -1722,6 +1722,41 @@ TG_INTERNAL void tg_c_x87(tgProc *p, tgBytes *b, tgInstr const *in, char const *
 // labels and gotos, as are the jumps of a break or continue out of an outer loop.
 ////////////////////////////////////////////////////////////////
 
+// A front end may fill its entry block last, as it learns what the procedure needs (globals'
+// addresses): the entry jumps to a block placed later that only it reaches, which jumps back to the
+// block right after the entry. That block prints first, after the entry, so both gotos fall
+// through (and go, see tg_c_fold).
+TG_INTERNAL void tg_c_entry_first(tgProc *p) {
+	if (p->order.count < 3) return;
+	tgBlock *entry = p->order.data[0], *next = p->order.data[1];
+	tgInstr const *j = entry->instrs.count ? &entry->instrs.data[entry->instrs.count - 1] : NULL;
+	if (j == NULL || j->op != tgOp_Jump || (j->flags & tgInstrFlag_Struct)) return;
+	isize at = -1;
+	for (isize i = 2; i < p->order.count; i++)
+		if (p->order.data[i]->index == (i32)j->imm) at = i;
+	if (at < 0) return;
+	tgBlock *x = p->order.data[at];
+	tgInstr const *back = x->instrs.count ? &x->instrs.data[x->instrs.count - 1] : NULL;
+	if (back == NULL || back->op != tgOp_Jump || (back->flags & tgInstrFlag_Struct) || back->imm != next->index ||
+	    x->s_else || x->s_end || x->s_head || x->sw)
+		return;
+	// only the entry reaches it
+	for (isize i = 0; i < p->order.count; i++) {
+		tgBlock const *b = p->order.data[i];
+		if (b == entry || b->instrs.count == 0) continue;
+		tgInstr const *t = &b->instrs.data[b->instrs.count - 1];
+		if ((t->op == tgOp_Jump || t->op == tgOp_Branch) && t->imm == x->index) return;
+		if (t->op == tgOp_Branch && t->c == (u32)x->index) return;
+		if (b->sw) {
+			tgSwitch const *sw = &p->switches.data[b->sw - 1];
+			for (i32 k = 0; k < sw->n; k++) if (p->sw_targets.data[sw->first + k] == x->index) return;
+			if (sw->def == x->index) return;
+		}
+	}
+	memmove(&p->order.data[2], &p->order.data[1], sizeof(tgBlock *) * (usize)(at - 1));
+	p->order.data[1] = x;
+}
+
 // Whether the branch or jump is a construct's, printed structured.
 TG_INTERNAL bool tg_c_s_live(tgProc *p, tgInstr const *in) {
 	return (in->flags & tgInstrFlag_Struct) && in->b > 0 && in->b <= (u32)p->structs.count &&
@@ -2529,6 +2564,7 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		tg_c_type_decl(m, &b, p->c_va_types.data[i], name);
 		tg_c_puts(&b, ";\n");
 	}
+	tg_c_entry_first(p);
 	tg_c_structs(p);
 	// a label for each block a jump reaches, -Wall warns of the others; tg_end_proc made sure
 	// that those are placed. The blocks that are not hold dead code.
