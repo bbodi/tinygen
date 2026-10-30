@@ -165,7 +165,10 @@ The C reads like hand-written C rather than a dump of the IR:
   along with their declarations.
 - After `name = v;`, the rest of the block reads `v` as `name`, so the C reads
   the variable the way the source does (`v = v ^ (v << 13)`). This applies to a
-  local whose address is never taken and that has the value's size.
+  local whose address is never taken and that has the value's size. A local
+  with no source name that is assigned once and read once in the same block is
+  replaced by its expression, so a value passed through temporaries reads as
+  one expression.
 - `tyg_local_typed(p, type)` declares a local with its C type. A load or store
   of the whole local is a plain assignment.
 - The structured builders `tyg_if`/`tyg_if_not`/`tyg_else`/`tyg_endif`,
