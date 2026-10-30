@@ -1652,6 +1652,19 @@ TG_INTERNAL void tg_c_x87(tgProc *p, tgBytes *b, tgInstr const *in, char const *
 }
 
 // Prints one instruction as a statement. `line` and `file` are the last #line's.
+// A tyg_switch's chain of tests as one switch on its value, which the C names unsigned: each case
+// its value's bits in the value's width.
+TG_INTERNAL void tg_c_switch(tgProc *p, tgBytes *b, tgSwitch const *sw) {
+	char iv[32];
+	i32 size = tg_type_size(p->vregs.data[sw->v]);
+	u64 mask = size >= 8 ? ~(u64)0 : ((u64)1 << (size * 8)) - 1;
+	tg_c_printf(b, "\tswitch (%s) {", tg_c_int(p, sw->v, iv));
+	for (i32 k = 0; k < sw->n; k++)
+		tg_c_printf(b, " case %lluULL: goto B%d;", (unsigned long long)((u64)p->sw_values.data[sw->first + k] & mask),
+		            (int)p->sw_targets.data[sw->first + k]);
+	tg_c_printf(b, " default: goto B%d; }\n", (int)sw->def);
+}
+
 TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line, i32 *file) {
 	tgModule *m = p->m;
 	tgType t = in->dst != 0 ? p->vregs.data[in->dst] : in->type;
@@ -2077,8 +2090,14 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 	for (isize bi = 0; bi < p->order.count; bi++) {
 		tgBlock const *blk = p->order.data[bi];
 		tgInstr const *last = blk->instrs.count > 0 ? &blk->instrs.data[blk->instrs.count - 1] : NULL;
-		if (last != NULL && (last->op == tgOp_Jump || last->op == tgOp_Branch)) target[last->imm] = true;
-		if (last != NULL && last->op == tgOp_Branch) target[last->c] = true;
+		bool swb = blk->sw != 0 && last != NULL && last->op == tgOp_Branch;   // printed as the switch
+		if (!swb && last != NULL && (last->op == tgOp_Jump || last->op == tgOp_Branch)) target[last->imm] = true;
+		if (!swb && last != NULL && last->op == tgOp_Branch) target[last->c] = true;
+		if (swb) {
+			tgSwitch const *sw = &p->switches.data[blk->sw - 1];
+			for (i32 k = 0; k < sw->n; k++) target[p->sw_targets.data[sw->first + k]] = true;
+			target[sw->def] = true;
+		}
 	}
 	i32 line = 0, file = 0;
 	for (isize bi = 0; bi < p->order.count && p->fail_reason == NULL; bi++) {
@@ -2088,7 +2107,12 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 			break;
 		}
 		if (target[blk->index]) tg_c_printf(&b, "B%d:;\n", blk->index);
-		for (isize ii = 0; ii < blk->instrs.count; ii++) tg_c_instr(p, &b, &blk->instrs.data[ii], &line, &file);
+		isize ni = blk->instrs.count;
+		tgInstr const *last = ni > 0 ? &blk->instrs.data[ni - 1] : NULL;
+		// A tyg_switch's first test: the whole chain as a switch, the later tests left unreached.
+		bool sw = blk->sw != 0 && last != NULL && last->op == tgOp_Branch;
+		for (isize ii = 0; ii < ni - (sw ? 1 : 0); ii++) tg_c_instr(p, &b, &blk->instrs.data[ii], &line, &file);
+		if (sw) tg_c_switch(p, &b, &p->switches.data[blk->sw - 1]);
 	}
 	tg_c_puts(&b, "}\n");
 	if (p->fail_reason == NULL) {

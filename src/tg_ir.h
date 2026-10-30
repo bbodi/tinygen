@@ -517,7 +517,18 @@ typedef struct tgBlock {
 	i32           debug_scope; // the lexical scope the block starts in
 	tgInstrArray instrs;
 	i32           code_offset;
+	i32           sw;    // 1 + the index of the tgSwitch whose chain of tests this block's branch begins, 0: none
 } tgBlock;
+
+// A tyg_switch: a chain of equality tests on v, its cases in the procedure's sw_values and
+// sw_targets from `first`, which the C output prints as a switch.
+typedef struct tgSwitch {
+	u32 v;
+	i32 first, n;
+	i32 def;
+} tgSwitch;
+
+TG_ARRAY(tgSwitchArray, tgSwitch);
 
 TG_ARRAY(tgBlockPtrArray, tgBlock *);
 
@@ -678,6 +689,9 @@ struct tyg_proc {
 
 	tgBlockPtrArray   blocks;
 	tgBlockPtrArray   order;
+	tgSwitchArray     switches;   // tyg_switch's, for the C output
+	tgI64Array        sw_values;
+	tgI32Array        sw_targets;
 	tgBlock *         curr;
 	tgTypeArray       vregs;   // vreg 0 is no value
 	tgVregInfoArray   vinfo;

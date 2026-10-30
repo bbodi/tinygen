@@ -370,6 +370,10 @@ tyg_val tyg_select(tyg_proc *p, tyg_val cond, tyg_val a, tyg_val b);
 /* Control flow */
 void tyg_jump(tyg_proc *p, tyg_block target);
 void tyg_branch(tyg_proc *p, tyg_val cond, tyg_block if_true, tyg_block if_false);
+/* To targets[i] where the integer v equals values[i], else to def. Built as a chain of equality
+   tests, which the C output prints as one C switch on v; the values are distinct, n >= 1. */
+void tyg_switch(tyg_proc *p, tyg_val v, int n, const int64_t *values, const tyg_block *targets,
+                tyg_block def);
 void tyg_ret(tyg_proc *p, tyg_val v);         /* 0 for a void procedure */
 void tyg_ret_mem(tyg_proc *p, tyg_addr a);    /* an aggregate result */
 void tyg_trap(tyg_proc *p);

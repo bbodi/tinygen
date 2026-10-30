@@ -289,6 +289,9 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 	p->vinfo.arena = tg_arena();
 	p->blocks.arena = tg_arena();
 	p->order.arena = tg_arena();
+	p->switches.arena = tg_arena();
+	p->sw_values.arena = tg_arena();
+	p->sw_targets.arena = tg_arena();
 	p->locals.arena = tg_arena();
 	p->calls.arena = tg_arena();
 	p->params_in.arena = tg_arena();
@@ -1008,6 +1011,38 @@ void tyg_branch(tyg_proc *p, tyg_val cond, tyg_block if_true, tyg_block if_false
 	if (!tg_block_check(p, if_true) || !tg_block_check(p, if_false)) return;
 	if (tg_curr_terminated(p)) return;
 	tg_branch(p, tg_cond_bool(p, cond), p->blocks.data[if_true], p->blocks.data[if_false]);
+}
+
+void tyg_switch(tyg_proc *p, tyg_val v, int n, const int64_t *values, const tyg_block *targets,
+                tyg_block def) {
+	tgType t;
+	if (!tg_b_ok(p)) return;
+	t = tg_val_check(p, v);
+	if (t == tgType_None) return;
+	if (!tg_type_is_int(t) || n < 1 || values == NULL || targets == NULL) {
+		tg_fail(p, "tyg_switch: an integer value and at least one case");
+		return;
+	}
+	for (int i = 0; i < n; i++)
+		if (!tg_block_check(p, targets[i])) return;
+	if (!tg_block_check(p, def) || tg_curr_terminated(p)) return;
+	tgSwitch sw;
+	sw.v = v;
+	sw.first = (i32)p->sw_values.count;
+	sw.n = n;
+	sw.def = def;
+	for (int i = 0; i < n; i++) {
+		tg_array_add(&p->sw_values, tg_fold_norm(t, values[i]));
+		tg_array_add(&p->sw_targets, (i32)targets[i]);
+	}
+	tg_array_add(&p->switches, sw);
+	p->curr->sw = (i32)p->switches.count;
+	for (int i = 0; i < n; i++) {
+		tyg_val eq = tyg_cmp(p, TYG_EQ, v, tyg_iconst(p, tg_public_scalar(t), values[i]));
+		tyg_block next = i + 1 < n ? tyg_block_new(p) : def;
+		tyg_branch(p, eq, targets[i], next);
+		if (i + 1 < n) tyg_block_set(p, next);
+	}
 }
 
 void tyg_ret(tyg_proc *p, tyg_val v) {

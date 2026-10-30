@@ -159,6 +159,38 @@ static void build_select(void) {
 	r = tyg_select(p, tyg_cmp(p, TYG_EQ, i, k32(p, 0)), tyg_fconst(p, TYG_F64, 3.14159), r);
 	tyg_ret(p, r);
 	check(tyg_proc_end(p));
+	// int64_t tg_switch(int64_t x): 10 for 0, 50 for 5, -30 for -3, 99 for INT64_MIN, -1 else
+	p = begin("tg_switch", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
+	{
+		int64_t vals[4] = { 0, 5, -3, INT64_MIN };
+		int64_t res[4] = { 10, 50, -30, 99 };
+		tyg_block t[4], def = tyg_block_new(p);
+		for (int k = 0; k < 4; k++) t[k] = tyg_block_new(p);
+		tyg_switch(p, tyg_param(p, 0), 4, vals, t, def);
+		for (int k = 0; k < 4; k++) {
+			tyg_block_set(p, t[k]);
+			tyg_ret(p, k64(p, res[k]));
+		}
+		tyg_block_set(p, def);
+		tyg_ret(p, k64(p, -1));
+	}
+	check(tyg_proc_end(p));
+	// int32_t tg_switch8(int8_t x): x * 2 for 1 and 2 (one target), 7 for -1, x else
+	p = begin("tg_switch8", TYG_SYM_GLOBAL, sig(ty(TYG_I32), ty(TYG_I8), NULL, NULL, 0));
+	{
+		int64_t vals[3] = { 1, 2, -1 };
+		tyg_block two = tyg_block_new(p), seven = tyg_block_new(p), def = tyg_block_new(p);
+		tyg_block t[3] = { two, two, seven };
+		tyg_val x = tyg_param(p, 0);
+		tyg_switch(p, x, 3, vals, t, def);
+		tyg_block_set(p, two);
+		tyg_ret(p, tyg_bin(p, TYG_MUL, tyg_convert(p, TYG_SEXT, TYG_I32, x), k32(p, 2)));
+		tyg_block_set(p, seven);
+		tyg_ret(p, k32(p, 7));
+		tyg_block_set(p, def);
+		tyg_ret(p, tyg_convert(p, TYG_SEXT, TYG_I32, x));
+	}
+	check(tyg_proc_end(p));
 }
 
 // int32_t tg_counter;

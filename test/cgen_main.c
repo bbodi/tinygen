@@ -39,6 +39,7 @@ int64_t tg_sext_8_64(int8_t); int32_t tg_zext_16_32(int16_t); int8_t tg_trunc_64
 double tg_uitof_64_64(int64_t); float tg_uitof_32_32(int32_t); int8_t tg_ftosi_32_8(float); int64_t tg_ftosi_64_64(double);
 int64_t tg_ftoui_64_64(double); int32_t tg_ftoui_64_32(double); double tg_fext(float); float tg_ftrunc(double);
 int64_t tg_bitcast_f64_i64(double); float tg_bitcast_i32_f32(int32_t); int64_t tg_select(int32_t, int64_t, int64_t); double tg_fconsts(int32_t);
+int64_t tg_switch(int64_t); int32_t tg_switch8(int8_t);
 extern int32_t tg_counter;
 int32_t tg_volatile(int32_t *, int32_t); int64_t tg_mem(const int64_t *); void tg_fill(char *, const char *, int32_t, int64_t);
 int32_t tg_trap_if(int32_t); void tg_store_void(int64_t *, int64_t); char *tg_ptr_add(char *, int64_t);
@@ -185,6 +186,17 @@ static void check_conversions(void) {
 	EQ(tg_select(1, 10, 20), 10);
 	EQ(tg_select(0, 10, 20), 20);
 	EQ(tg_select(-256, 10, 20), 10);
+	EQ(tg_switch(0), 10);
+	EQ(tg_switch(5), 50);
+	EQ(tg_switch(-3), -30);
+	EQ(tg_switch(INT64_MIN), 99);
+	EQ(tg_switch(4), -1);
+	EQ(tg_switch(INT64_MAX), -1);
+	EQ(tg_switch8(1), 2);
+	EQ(tg_switch8(2), 4);
+	EQ(tg_switch8(-1), 7);
+	EQ(tg_switch8(3), 3);
+	EQ(tg_switch8(-128), -128);
 	FEQ(tg_fconsts(0), 3.14159);
 	FEQ(tg_fconsts(1), -0.0);
 	FEQ(tg_fconsts(2), (double)INFINITY);

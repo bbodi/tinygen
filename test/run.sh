@@ -171,6 +171,9 @@ check_c_names() {
 		'^	((struct tyg_r[0-9]* \*)(v1))->f1.f3 = (int64_t)v[0-9]*;$' '^	((struct tyg_r[0-9]* \*)(v[0-9]* - 32))->f2\[0\] = ((struct tyg_r[0-9]* \*)(v[0-9]* - 8))->f1;$'; do
 		grep -q "$decl" "$1" || fail "cgen typed memory: no line matches $decl"
 	done
+	# tyg_switch: one C switch, its cases and default
+	grep -q '^	switch (.*) { case 0ULL: goto B[0-9]*; case 5ULL: goto B[0-9]*; case 18446744073709551613ULL: goto B[0-9]*; case 9223372036854775808ULL: goto B[0-9]*; default: goto B[0-9]*; }$' "$1" ||
+		fail "cgen switch: no C switch for tg_switch"
 	if $cc -std=c99 -Wall -Wextra -g -O2 -c "$1" -o "$out/cgen-c-g.o" > "$out/cgen-c-g.log" 2>&1 && [ ! -s "$out/cgen-c-g.log" ]; then
 		echo "cgen C names: checked, compiles with -g -O2"
 	else
