@@ -181,9 +181,10 @@ check_c_names() {
 	grep -q '^	return (int64_t).*l[0-9]*) \* UINT64_C(0x3e8).*(double)l[0-9]*.*(uint32_t)l[0-9]*)*;$' "$1" ||
 		fail "cgen expressions: tg_typed_locals does not return one expression"
 	# structured control flow: tg_struct prints as for (;;), if/else, break and continue; the break
-	# out of the outer loop is the one goto
+	# out of the outer loop is the one goto; its if (1) prints as the part that runs
 	body=$(sed -n '/^int64_t tg_struct(int64_t p0) {$/,/^}$/p' "$1")
-	for decl in '	for (;;) {' '	} else {' '	break;' '	continue;' '	if (1) {' '	if (!'; do
+	printf '%s\n' "$body" | grep -qE '	if \((0|1)\) \{' && fail "cgen structured: tg_struct has an if on a known condition"
+	for decl in '	for (;;) {' '	} else {' '	break;' '	continue;' '	if (!'; do
 		printf '%s\n' "$body" | grep -qF "$decl" || fail "cgen structured: tg_struct has no '$decl'"
 	done
 	[ "$(printf '%s\n' "$body" | grep -c 'goto ')" = 1 ] || fail "cgen structured: tg_struct has other gotos than the outer break"

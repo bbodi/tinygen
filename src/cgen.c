@@ -2339,6 +2339,17 @@ TG_INTERNAL bool tg_c_pure(char const *s, isize n) {
 	return true;
 }
 
+// Whether EXPR names a parameter (pN), whose one read keeps it from being unused in C.
+TG_INTERNAL bool tg_c_reads_param(char const *s, isize n) {
+	for (isize i = 0; i + 1 < n; i++) {
+		if (s[i] != 'p' || (i > 0 && tg_c_idch(s[i - 1])) || !(s[i + 1] >= '0' && s[i + 1] <= '9')) continue;
+		isize j = i + 1;
+		while (j < n && s[j] >= '0' && s[j] <= '9') j++;
+		if (j == n || !tg_c_idch(s[j])) return true;
+	}
+	return false;
+}
+
 // A line after which a block's code does not go on: a jump, a return, a switch.
 TG_INTERNAL bool tg_c_ends_block(tgCLine const *l) {
 	return strchr(l->s, '{') != NULL || strchr(l->s, '}') != NULL || strncmp(l->s, "\tbreak;", 7) == 0 ||
@@ -2382,6 +2393,36 @@ TG_INTERNAL void tg_c_subst(tgCLine *l, u32 v, char const *by, isize blen, char 
 	l->n = o - s;
 }
 
+// An if on a known condition (`if (0) {`, `if (1) {`) gives way to the part that runs; the other
+// part goes, unless a goto from outside it names a label in it.
+TG_INTERNAL void tg_c_known_ifs(tgCLine *ls, isize first, isize nl) {
+	for (isize li = first; li < nl; li++) {
+		if (ls[li].dead || (strcmp(ls[li].s, "\tif (0) {") && strcmp(ls[li].s, "\tif (1) {"))) continue;
+		isize depth = 1, mid = -1, end = -1;
+		for (isize lj = li + 1; lj < nl && end < 0; lj++) {
+			if (ls[lj].dead) continue;
+			if (ls[lj].n >= 2 && ls[lj].s[0] == '\t' && ls[lj].s[1] == '}' && --depth == 0) {
+				if (!strcmp(ls[lj].s, "\t} else {")) mid = lj;
+				else end = lj;
+			}
+			if (ls[lj].n > 0 && ls[lj].s[ls[lj].n - 1] == '{') depth++;
+		}
+		if (end < 0) continue;
+		bool taken = ls[li].s[5] == '1';
+		isize d0 = taken ? (mid >= 0 ? mid : end) : li, d1 = taken ? end : (mid >= 0 ? mid : end);   // the part that goes, its bounds
+		bool named = false;
+		for (isize lj = d0 + 1; lj < d1 && !named; lj++) {
+			if (ls[lj].dead || ls[lj].s[0] != 'B' || ls[lj].n < 4 || strcmp(ls[lj].s + ls[lj].n - 2, ":;")) continue;
+			char ref[32];
+			snprintf(ref, sizeof(ref), "goto %.*s;", (int)(ls[lj].n - 2), ls[lj].s);
+			for (isize lk = first; lk < nl && !named; lk++) named = (lk <= d0 || lk >= d1) && !ls[lk].dead && strstr(ls[lk].s, ref) != NULL;
+		}
+		if (named) continue;
+		for (isize lj = d0; lj <= d1; lj++) ls[lj].dead = true;
+		ls[li].dead = ls[end].dead = true;
+	}
+}
+
 // Folds the statements of the body in b from `body` on (and the declarations of what folded
 // away, from `decl` to `body`), see above.
 TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
@@ -2401,11 +2442,13 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	}
 	isize first = 0;   // the first body line
 	for (isize i = decl; i < body; i++) if (b->data[i] == '\n') first++;
+	tg_c_known_ifs(ls, first, nl);
 	isize nv = p->vregs.count + 1;
 	isize *uses = (isize *)calloc((usize)nv, sizeof(isize));
 	u8 *amp = (u8 *)calloc((usize)nv, 1), *gone = (u8 *)calloc((usize)nv, 1);
 	for (isize li = first; li < nl; li++) {
 		char const *s = ls[li].s;
+		if (ls[li].dead) continue;
 		for (isize i = 0; i < ls[li].n; i++) {
 			if (s[i] != 'v' || (i > 0 && tg_c_idch(s[i - 1]))) continue;
 			isize j = i + 1;
@@ -2420,7 +2463,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	for (isize li = first; li < nl; li++) {
 		char const *expr;
 		isize elen;
-		u32 v = tg_c_def_line(&ls[li], &expr, &elen);
+		u32 v = ls[li].dead ? 0 : tg_c_def_line(&ls[li], &expr, &elen);
 		if (v == 0 || v >= (u32)nv || amp[v] || tg_c_has_call(expr, elen)) continue;
 		tgType t = p->vregs.data[v];
 		char const *T = p->c_ptr[v] ? "char *" : tg_c_utypes[t];
@@ -2447,7 +2490,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 			free(by);
 			continue;
 		}
-		if (uses[v] == 1 && tg_c_pure(expr, elen)) {   // never read (a switch's first test): it goes
+		if (uses[v] == 1 && !strstr(expr, "volatile") && !tg_c_reads_param(expr, elen)) {   // never read (a switch's first test, a value of a part that went): it goes
 			ls[li].dead = true;
 			gone[v] = 1;
 			free(by);
@@ -2497,11 +2540,12 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	for (isize li = 0; li < first; li++) {
 		char const *s = ls[li].s;
 		char const *vp = strrchr(s, ' ');
+		if (vp != NULL && vp[1] == '*') vp++;   // char *vN
 		if (vp == NULL || strncmp(s, "\tTYG_UNUSED ", 12) != 0 || vp[1] != 'v' || s[ls[li].n - 1] != ';') continue;
 		char *end;
 		u32 v = (u32)strtoul(vp + 2, &end, 10);
 		if (end == vp + 2 || strcmp(end, ";") != 0) continue;   // a named variable such as v2_1
-		if (v > 0 && v < (u32)nv && gone[v]) ls[li].dead = true;
+		if (v > 0 && v < (u32)nv && (gone[v] || uses[v] == 0)) ls[li].dead = true;
 	}
 	// the body indented by its braces (tyg_if, tyg_loop), labels and #line at the margin; a
 	// construct's jump that falls off left an empty line
