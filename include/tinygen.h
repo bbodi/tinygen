@@ -374,6 +374,20 @@ tyg_val tyg_select(tyg_proc *p, tyg_val cond, tyg_val a, tyg_val b);
 /* Control flow */
 void tyg_jump(tyg_proc *p, tyg_block target);
 void tyg_branch(tyg_proc *p, tyg_val cond, tyg_block if_true, tyg_block if_false);
+/* Structured control flow: the same blocks and branches that tyg_branch and tyg_jump build, which
+   the C output prints as if/else, loops, break and continue instead of labels and gotos. They
+   nest; tyg_block_set and the other jumps may still be used inside them.
+   tyg_if: the then part follows, on cond; tyg_else: the else part follows; tyg_endif: the code
+   after the if. tyg_loop: a loop whose body follows (C: for (;;)); falling off the end of the body
+   at tyg_endloop goes back to its start, and the code after the loop follows. tyg_break and
+   tyg_continue leave or restart the depth-th enclosing loop, 0 the innermost. */
+void tyg_if(tyg_proc *p, tyg_val cond);
+void tyg_else(tyg_proc *p);
+void tyg_endif(tyg_proc *p);
+void tyg_loop(tyg_proc *p);
+void tyg_break(tyg_proc *p, int depth);
+void tyg_continue(tyg_proc *p, int depth);
+void tyg_endloop(tyg_proc *p);
 /* To targets[i] where the integer v equals values[i], else to def. Built as a chain of equality
    tests, which the C output prints as one C switch on v; the values are distinct, n >= 1. */
 void tyg_switch(tyg_proc *p, tyg_val v, int n, const int64_t *values, const tyg_block *targets,

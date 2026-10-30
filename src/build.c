@@ -290,6 +290,8 @@ tyg_proc *tyg_proc_begin(tyg_module *m, tyg_sym sym, const tyg_sig *sig) {
 	p->blocks.arena = tg_arena();
 	p->order.arena = tg_arena();
 	p->switches.arena = tg_arena();
+	p->structs.arena = tg_arena();
+	p->s_open.arena = tg_arena();
 	p->sw_values.arena = tg_arena();
 	p->sw_targets.arena = tg_arena();
 	p->locals.arena = tg_arena();
@@ -1023,6 +1025,149 @@ void tyg_branch(tyg_proc *p, tyg_val cond, tyg_block if_true, tyg_block if_false
 	if (!tg_block_check(p, if_true) || !tg_block_check(p, if_false)) return;
 	if (tg_curr_terminated(p)) return;
 	tg_branch(p, tg_cond_bool(p, cond), p->blocks.data[if_true], p->blocks.data[if_false]);
+}
+
+// The last instruction of the current block, flagged as construct s's (kind: 0 the if's branch,
+// 1 to fall off, 2 a break, 3 a continue), when it is a branch or jump.
+TG_INTERNAL void tg_s_flag(tgProc *p, i32 s, u32 kind) {
+	tgBlock *b = p->curr;
+	if (b == NULL || b->instrs.count == 0) return;
+	tgInstr *in = &b->instrs.data[b->instrs.count - 1];
+	if (in->op != tgOp_Jump && in->op != tgOp_Branch) return;
+	in->flags |= tgInstrFlag_Struct;
+	in->b = (u32)s + 1;
+	if (in->op == tgOp_Jump) in->c = kind;
+}
+
+// The construct open `depth` levels in of the kind wanted (loop), or -1 failing p.
+TG_INTERNAL i32 tg_s_find(tgProc *p, bool loop, int depth, char const *who) {
+	for (isize i = p->s_open.count - 1; i >= 0; i--) {
+		i32 s = p->s_open.data[i];
+		if (p->structs.data[s].loop != loop) continue;
+		if (depth-- == 0) return s;
+	}
+	tg_fail(p, who);
+	return -1;
+}
+
+void tyg_if(tyg_proc *p, tyg_val cond) {
+	tgStruct st;
+	if (!tg_b_ok(p) || tg_val_check(p, cond) == tgType_None) return;
+	memset(&st, 0, sizeof(st));
+	tgBlock *then_ = tg_new_block(p), *end = tg_new_block(p);
+	st.at = p->curr->index;
+	st.then_ = then_->index;
+	st.else_ = -1;
+	st.end = end->index;
+	i32 s = (i32)p->structs.count;
+	st.broken = tg_curr_terminated(p);   // in unreachable code: no branch to print as the if
+	if (!st.broken) {
+		u32 c = tg_cond_bool(p, cond);
+		i64 k = 0;
+		if (tg_known(p, c, &k)) st.known = (k & 0xff) != 0 ? 2 : 1;
+		st.cond = c;
+		tg_branch(p, c, then_, end);
+		tg_s_flag(p, s, 0);
+	}
+	tg_array_add(&p->structs, st);
+	tg_array_add(&p->s_open, s);
+	end->s_end = s + 1;
+	tyg_block_set(p, then_->index);
+}
+
+void tyg_else(tyg_proc *p) {
+	if (!tg_b_ok(p)) return;
+	i32 s = p->s_open.count > 0 ? p->s_open.data[p->s_open.count - 1] : -1;
+	if (s < 0 || p->structs.data[s].loop || p->structs.data[s].else_ >= 0) {
+		tg_fail(p, "tyg_else: no tyg_if open without an else");
+		return;
+	}
+	tgStruct *st = &p->structs.data[s];
+	tgBlock *e = tg_new_block(p), *at = p->blocks.data[st->at];
+	st = &p->structs.data[s];
+	st->else_ = e->index;
+	e->s_else = s + 1;
+	if (!tg_curr_terminated(p)) {   // a jump it emits, not one that ended the part
+		tg_jump(p, p->blocks.data[st->end]);
+		tg_s_flag(p, s, 1);
+	}
+	// the if's branch, or the jump it folded to, goes to the else part instead of the join
+	tgInstr *br = at->instrs.count > 0 ? &at->instrs.data[at->instrs.count - 1] : NULL;
+	if (br != NULL && (br->flags & tgInstrFlag_Struct) && br->b == (u32)s + 1) {
+		if (br->op == tgOp_Branch && br->c == (u32)st->end) br->c = (u32)e->index;
+		else if (br->op == tgOp_Jump && br->imm == st->end) br->imm = e->index;
+	}
+	tyg_block_set(p, e->index);
+}
+
+void tyg_endif(tyg_proc *p) {
+	if (!tg_b_ok(p)) return;
+	i32 s = p->s_open.count > 0 ? p->s_open.data[p->s_open.count - 1] : -1;
+	if (s < 0 || p->structs.data[s].loop) {
+		tg_fail(p, "tyg_endif: no tyg_if open");
+		return;
+	}
+	p->s_open.count--;
+	if (!tg_curr_terminated(p)) {
+		tg_jump(p, p->blocks.data[p->structs.data[s].end]);
+		tg_s_flag(p, s, 1);
+	}
+	tyg_block_set(p, p->structs.data[s].end);
+}
+
+void tyg_loop(tyg_proc *p) {
+	tgStruct st;
+	if (!tg_b_ok(p)) return;
+	memset(&st, 0, sizeof(st));
+	st.loop = 1;
+	tgBlock *head = tg_new_block(p), *end = tg_new_block(p);
+	st.at = p->curr->index;
+	st.head = head->index;
+	st.then_ = head->index;
+	st.else_ = -1;
+	st.end = end->index;
+	st.broken = tg_curr_terminated(p);
+	i32 s = (i32)p->structs.count;
+	tg_array_add(&p->structs, st);
+	tg_array_add(&p->s_open, s);
+	head->s_head = s + 1;
+	end->s_end = s + 1;
+	if (!tg_curr_terminated(p)) {
+		tg_jump(p, head);
+		tg_s_flag(p, s, 1);
+	}
+	tyg_block_set(p, head->index);
+}
+
+void tyg_break(tyg_proc *p, int depth) {
+	if (!tg_b_ok(p)) return;
+	i32 s = tg_s_find(p, true, depth, "tyg_break: no loop that deep");
+	if (s < 0 || tg_curr_terminated(p)) return;
+	tg_jump(p, p->blocks.data[p->structs.data[s].end]);
+	if (depth == 0) tg_s_flag(p, s, 2);   // an outer loop's: a goto
+}
+
+void tyg_continue(tyg_proc *p, int depth) {
+	if (!tg_b_ok(p)) return;
+	i32 s = tg_s_find(p, true, depth, "tyg_continue: no loop that deep");
+	if (s < 0 || tg_curr_terminated(p)) return;
+	tg_jump(p, p->blocks.data[p->structs.data[s].head]);
+	if (depth == 0) tg_s_flag(p, s, 3);
+}
+
+void tyg_endloop(tyg_proc *p) {
+	if (!tg_b_ok(p)) return;
+	i32 s = p->s_open.count > 0 ? p->s_open.data[p->s_open.count - 1] : -1;
+	if (s < 0 || !p->structs.data[s].loop) {
+		tg_fail(p, "tyg_endloop: no tyg_loop open");
+		return;
+	}
+	p->s_open.count--;
+	if (!tg_curr_terminated(p)) {
+		tg_jump(p, p->blocks.data[p->structs.data[s].head]);
+		tg_s_flag(p, s, 1);
+	}
+	tyg_block_set(p, p->structs.data[s].end);
 }
 
 void tyg_switch(tyg_proc *p, tyg_val v, int n, const int64_t *values, const tyg_block *targets,

@@ -198,6 +198,45 @@ static void build_select(void) {
 		tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_MUL, a7, k64(p, 1000)), f), n));
 	}
 	check(tyg_proc_end(p));
+	// int64_t tg_struct(int64_t n): structured control flow (tyg_if, tyg_loop):
+	//   s = 0; i = 0; for (;;) { if (i >= n) break; if (i % 3 == 0) s += i; else { if (i == 7)
+	//   { i += 1; continue; } s -= 1; } if (1) s += 100; for (;;) { if (s > 1000000) break 2 (out of
+	//   both); break; } i += 1; } return s;
+	p = begin("tg_struct", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));
+	{
+		tyg_local ls = tyg_local_typed(p, ty(TYG_I64)), li = tyg_local_typed(p, ty(TYG_I64));
+		tyg_val n = tyg_param(p, 0);
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), k64(p, 0), 0);
+		tyg_store(p, TYG_I64, tyg_at_local(li, 0), k64(p, 0), 0);
+		tyg_loop(p);
+		tyg_val i = tyg_load(p, TYG_I64, tyg_at_local(li, 0), 0);
+		tyg_if(p, tyg_cmp(p, TYG_SGE, i, n));
+		tyg_break(p, 0);
+		tyg_endif(p);
+		i = tyg_load(p, TYG_I64, tyg_at_local(li, 0), 0);
+		tyg_if(p, tyg_cmp(p, TYG_EQ, tyg_bin(p, TYG_SREM, i, k64(p, 3)), k64(p, 0)));
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), i), 0);
+		tyg_else(p);
+		tyg_if(p, tyg_cmp(p, TYG_EQ, i, k64(p, 7)));
+		tyg_store(p, TYG_I64, tyg_at_local(li, 0), tyg_bin(p, TYG_ADD, i, k64(p, 1)), 0);
+		tyg_continue(p, 0);
+		tyg_endif(p);
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), tyg_bin(p, TYG_SUB, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 1)), 0);
+		tyg_endif(p);
+		tyg_if(p, k32(p, 1));
+		tyg_store(p, TYG_I64, tyg_at_local(ls, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 100)), 0);
+		tyg_endif(p);
+		tyg_loop(p);
+		tyg_if(p, tyg_cmp(p, TYG_SGT, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0), k64(p, 1000000)));
+		tyg_break(p, 1);
+		tyg_endif(p);
+		tyg_break(p, 0);
+		tyg_endloop(p);
+		tyg_store(p, TYG_I64, tyg_at_local(li, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(li, 0), 0), k64(p, 1)), 0);
+		tyg_endloop(p);
+		tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_local(ls, 0), 0));
+	}
+	check(tyg_proc_end(p));
 	// int32_t tg_switch8(int8_t x): x * 2 for 1 and 2 (one target), 7 for -1, x else
 	p = begin("tg_switch8", TYG_SYM_GLOBAL, sig(ty(TYG_I32), ty(TYG_I8), NULL, NULL, 0));
 	{

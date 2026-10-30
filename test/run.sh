@@ -180,6 +180,13 @@ check_c_names() {
 	# expressions (tg_c_fold): tg_typed_locals returns one expression of its locals and constants
 	grep -q '^	return (int64_t).*l[0-9]*) \* UINT64_C(0x3e8).*(double)l[0-9]*.*(uint32_t)l[0-9]*)*;$' "$1" ||
 		fail "cgen expressions: tg_typed_locals does not return one expression"
+	# structured control flow: tg_struct prints as for (;;), if/else, break and continue; the break
+	# out of the outer loop is the one goto
+	body=$(sed -n '/^int64_t tg_struct(int64_t p0) {$/,/^}$/p' "$1")
+	for decl in '	for (;;) {' '	} else {' '	break;' '	continue;' '	if (1) {'; do
+		printf '%s\n' "$body" | grep -qF "$decl" || fail "cgen structured: tg_struct has no '$decl'"
+	done
+	[ "$(printf '%s\n' "$body" | grep -c 'goto ')" = 1 ] || fail "cgen structured: tg_struct has other gotos than the outer break"
 	# tyg_switch: one C switch, its cases and default
 	grep -q '^	switch (.*) { case 0ULL: goto B[0-9]*; case 5ULL: goto B[0-9]*; case 18446744073709551613ULL: goto B[0-9]*; case 9223372036854775808ULL: goto B[0-9]*; default: goto B[0-9]*; }$' "$1" ||
 		fail "cgen switch: no C switch for tg_switch"

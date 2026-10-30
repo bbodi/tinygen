@@ -1712,6 +1712,73 @@ TG_INTERNAL void tg_c_x87(tgProc *p, tgBytes *b, tgInstr const *in, char const *
 }
 
 // Prints one instruction as a statement. `line` and `file` are the last #line's.
+
+////////////////////////////////////////////////////////////////
+// Structured control flow (tyg_if, tyg_loop)
+//
+// A construct prints as C's if/else and for (;;) where its blocks were placed as it nests: its
+// first block right after the one it starts in, an else part inside it, every construct starting
+// inside it ending inside it, and its jumps inside it. One that is not is printed broken, with
+// labels and gotos, as are the jumps of a break or continue out of an outer loop.
+////////////////////////////////////////////////////////////////
+
+// Whether the branch or jump is a construct's, printed structured.
+TG_INTERNAL bool tg_c_s_live(tgProc *p, tgInstr const *in) {
+	return (in->flags & tgInstrFlag_Struct) && in->b > 0 && in->b <= (u32)p->structs.count &&
+	       !p->structs.data[in->b - 1].broken;
+}
+
+typedef struct tgCSpan { i32 lo, hi, s; } tgCSpan;
+
+TG_INTERNAL int tg_c_span_cmp(void const *x, void const *y) {
+	tgCSpan const *a = (tgCSpan const *)x, *b = (tgCSpan const *)y;
+	if (a->lo != b->lo) return a->lo < b->lo ? -1 : 1;
+	return a->hi > b->hi ? -1 : a->hi < b->hi ? 1 : 0;   // the outer first
+}
+
+// Marks the constructs that cannot print structured broken, see above.
+TG_INTERNAL void tg_c_structs(tgProc *p) {
+	isize nb = p->blocks.count, ns = p->structs.count;
+	if (ns == 0) return;
+	i32 *pos = tg_alloc_items(i32, nb + 1);
+	for (isize i = 0; i < nb; i++) pos[i] = -1;
+	for (isize i = 0; i < p->order.count; i++) pos[p->order.data[i]->index] = (i32)i;
+	tgCSpan *sp = tg_alloc_items(tgCSpan, 2 * ns + 1);
+	isize n = 0;
+	for (isize s = 0; s < ns; s++) {
+		tgStruct *st = &p->structs.data[s];
+		i32 at = pos[st->at], start = pos[st->loop ? st->head : st->then_], end = pos[st->end];
+		i32 el = st->else_ >= 0 ? pos[st->else_] : -1;
+		if (at < 0 || start != at + 1 || end < 0 || end <= start || (st->else_ >= 0 && (el <= start || el >= end)))
+			st->broken = true;
+		if (st->broken) continue;
+		sp[n].lo = start; sp[n].hi = end; sp[n].s = (i32)s; n++;
+		// the then part nests on its own: nothing crosses its `} else {`
+		if (el >= 0) { sp[n].lo = start; sp[n].hi = el; sp[n].s = (i32)s; n++; }
+	}
+	qsort(sp, (size_t)n, sizeof(tgCSpan), tg_c_span_cmp);
+	tgCSpan *stack = tg_alloc_items(tgCSpan, n + 1);
+	isize top = 0;
+	for (isize i = 0; i < n; i++) {
+		while (top > 0 && stack[top - 1].hi <= sp[i].lo) top--;
+		if (top > 0 && sp[i].hi > stack[top - 1].hi) {   // crosses the one it starts in
+			p->structs.data[sp[i].s].broken = true;
+			p->structs.data[stack[top - 1].s].broken = true;
+		}
+		stack[top++] = sp[i];
+	}
+	// every construct's jumps inside it
+	for (isize bi = 0; bi < p->order.count; bi++) {
+		tgBlock const *blk = p->order.data[bi];
+		if (blk->instrs.count == 0) continue;
+		tgInstr const *in = &blk->instrs.data[blk->instrs.count - 1];
+		if (!(in->flags & tgInstrFlag_Struct) || in->b == 0 || in->b > (u32)ns) continue;
+		tgStruct *st = &p->structs.data[in->b - 1];
+		i32 lo = pos[st->loop ? st->head : st->then_] - 1, hi = pos[st->end];
+		if ((i32)bi < lo || (i32)bi >= hi) st->broken = true;
+	}
+}
+
 // A tyg_switch's chain of tests as one switch on its value, which the C names unsigned: each case
 // its value's bits in the value's width.
 TG_INTERNAL void tg_c_switch(tgProc *p, tgBytes *b, tgSwitch const *sw) {
@@ -1971,8 +2038,17 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 	case tgOp_MemSetDyn:
 		tg_c_printf(b, "memset(%s, (int)%s, (size_t)%s);", tg_c_voidp(p, a, pa), B, C);
 		break;
-	case tgOp_Jump:        tg_c_printf(b, "goto B%d;", (int)in->imm); break;
-	case tgOp_Branch:      tg_c_printf(b, "if (%s) goto B%d; else goto B%u;", A, (int)in->imm, c); break;
+	case tgOp_Jump:
+		if (!tg_c_s_live(p, in)) tg_c_printf(b, "goto B%d;", (int)in->imm);
+		else if (in->c == 0) tg_c_printf(b, "if (%d) {", p->structs.data[in->b - 1].known == 2);   // an if on a known condition
+		else if (in->c == 2) tg_c_puts(b, "break;");
+		else if (in->c == 3) tg_c_puts(b, "continue;");
+		else b->count--;   // falls off: no statement (the tab goes)
+		break;
+	case tgOp_Branch:
+		if (tg_c_s_live(p, in)) tg_c_printf(b, "if (%s) {", A);
+		else tg_c_printf(b, "if (%s) goto B%d; else goto B%u;", A, (int)in->imm, c);
+		break;
 	case tgOp_Ret:         tg_c_ret(p, b, in); break;
 	case tgOp_Call:
 		if (p->calls.data[in->imm].c == NULL) tg_c_unsupported(p, in->op);
@@ -2206,7 +2282,8 @@ TG_INTERNAL bool tg_c_pure(char const *s, isize n) {
 
 // A line after which a block's code does not go on: a jump, a return, a switch.
 TG_INTERNAL bool tg_c_ends_block(tgCLine const *l) {
-	return strstr(l->s, "goto ") != NULL || strncmp(l->s, "\treturn", 7) == 0 || strncmp(l->s, "\tswitch", 7) == 0 ||
+	return strchr(l->s, '{') != NULL || strchr(l->s, '}') != NULL || strncmp(l->s, "\tbreak;", 7) == 0 ||
+	       strncmp(l->s, "\tcontinue;", 10) == 0 || strstr(l->s, "goto ") != NULL || strncmp(l->s, "\treturn", 7) == 0 || strncmp(l->s, "\tswitch", 7) == 0 ||
 	       strstr(l->s, "TYG_UNREACHABLE") != NULL || strstr(l->s, "TYG_TRAP") != NULL;
 }
 
@@ -2341,10 +2418,21 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		if (end == vp + 2 || strcmp(end, ";") != 0) continue;   // a named variable such as v2_1
 		if (v > 0 && v < (u32)nv && gone[v]) ls[li].dead = true;
 	}
+	// the body indented by its braces (tyg_if, tyg_loop), labels and #line at the margin; a
+	// construct's jump that falls off left an empty line
 	b->count = decl;
+	isize depth = 0;
 	for (isize li = 0; li < nl; li++) {
-		if (!ls[li].dead) {
-			tg_array_add_elems(b, (u8 const *)ls[li].s, ls[li].n);
+		tgCLine const *l = &ls[li];
+		bool keep = !l->dead && (li < first || l->n > 1 || (l->n == 1 && l->s[0] != '\t'));
+		if (keep && li >= first && l->n > 0) {
+			bool closes = l->n >= 2 && l->s[0] == '\t' && l->s[1] == '}';
+			if (closes && depth > 0) depth--;
+			if (l->s[0] == '\t') for (isize d = 0; d < depth; d++) tg_array_add(b, (u8)'\t');
+			if (l->s[l->n - 1] == '{') depth++;
+		}
+		if (keep && (li < first || l->n > 0)) {
+			tg_array_add_elems(b, (u8 const *)l->s, l->n);
 			tg_array_add(b, (u8)'\n');
 		}
 		free(ls[li].s);
@@ -2422,6 +2510,7 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		tg_c_type_decl(m, &b, p->c_va_types.data[i], name);
 		tg_c_puts(&b, ";\n");
 	}
+	tg_c_structs(p);
 	// a label for each block a jump reaches, -Wall warns of the others; tg_end_proc made sure
 	// that those are placed. The blocks that are not hold dead code.
 	bool *target = tg_alloc_items(bool, p->blocks.count + 1);
@@ -2430,6 +2519,7 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 		tgBlock const *blk = p->order.data[bi];
 		tgInstr const *last = blk->instrs.count > 0 ? &blk->instrs.data[blk->instrs.count - 1] : NULL;
 		bool swb = blk->sw != 0 && last != NULL && last->op == tgOp_Branch;   // printed as the switch
+		if (last != NULL && tg_c_s_live(p, last)) continue;   // a construct's: no label
 		if (!swb && last != NULL && (last->op == tgOp_Jump || last->op == tgOp_Branch)) target[last->imm] = true;
 		if (!swb && last != NULL && last->op == tgOp_Branch) target[last->c] = true;
 		if (swb) {
@@ -2446,7 +2536,11 @@ TG_INTERNAL bool tg_c_proc(tgProc *p) {
 			tg_fail(p, "C output: a block does not end in a terminator");
 			break;
 		}
+		// a construct's end and else part close what it opened; a loop's body opens
+		if (blk->s_end && !p->structs.data[blk->s_end - 1].broken) tg_c_puts(&b, "\t}\n");
+		if (blk->s_else && !p->structs.data[blk->s_else - 1].broken) tg_c_puts(&b, "\t} else {\n");
 		if (target[blk->index]) tg_c_printf(&b, "B%d:;\n", blk->index);
+		if (blk->s_head && !p->structs.data[blk->s_head - 1].broken) tg_c_puts(&b, "\tfor (;;) {\n");
 		isize ni = blk->instrs.count;
 		tgInstr const *last = ni > 0 ? &blk->instrs.data[ni - 1] : NULL;
 		// A tyg_switch's first test: the whole chain as a switch, the later tests left unreached.

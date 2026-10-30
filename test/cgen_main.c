@@ -40,6 +40,7 @@ double tg_uitof_64_64(int64_t); float tg_uitof_32_32(int32_t); int8_t tg_ftosi_3
 int64_t tg_ftoui_64_64(double); int32_t tg_ftoui_64_32(double); double tg_fext(float); float tg_ftrunc(double);
 int64_t tg_bitcast_f64_i64(double); float tg_bitcast_i32_f32(int32_t); int64_t tg_select(int32_t, int64_t, int64_t); double tg_fconsts(int32_t);
 int64_t tg_switch(int64_t); int32_t tg_switch8(int8_t); int64_t tg_typed_locals(int64_t, int64_t *);
+int64_t tg_struct(int64_t);
 extern int32_t tg_counter;
 int32_t tg_volatile(int32_t *, int32_t); int64_t tg_mem(const int64_t *); void tg_fill(char *, const char *, int32_t, int64_t);
 int32_t tg_trap_if(int32_t); void tg_store_void(int64_t *, int64_t); char *tg_ptr_add(char *, int64_t);
@@ -191,6 +192,20 @@ static void check_conversions(void) {
 		EQ(tg_typed_locals(-5, &cell), 7000 - 5 - 5);
 		EQ(cell, -4);
 		EQ(tg_typed_locals(0x100000003LL, &cell), 7000 + 0x100000003LL + 3);
+	}
+	{
+		// the same loop in C
+		for (int64_t n = 0; n < 40; n++) {
+			int64_t s = 0;
+			for (int64_t i = 0; i < n; i++) {
+				if (i % 3 == 0) s += i;
+				else if (i == 7) continue;
+				else s -= 1;
+				s += 100;
+				if (s > 1000000) break;
+			}
+			EQ(tg_struct(n), s);
+		}
 	}
 	EQ(tg_switch(0), 10);
 	EQ(tg_switch(5), 50);

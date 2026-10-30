@@ -281,6 +281,7 @@ typedef struct tgInstr {
 
 enum {
 	tgInstrFlag_Volatile = 1<<0,
+	tgInstrFlag_Struct   = 1<<1, // a structured construct's branch or jump (tgStruct), b: 1 + its index
 };
 
 TG_ARRAY(tgInstrArray, tgInstr);
@@ -518,7 +519,23 @@ typedef struct tgBlock {
 	tgInstrArray instrs;
 	i32           code_offset;
 	i32           sw;    // 1 + the index of the tgSwitch whose chain of tests this block's branch begins, 0: none
+	i32           s_else, s_end, s_head; // 1 + the tgStruct whose else part, end (an if's join, a
+	                                     // loop's exit) or loop body starts here, 0: none
 } tgBlock;
+
+// A structured construct (tyg_if, tyg_loop), for the C output. An if: its branch ends the block
+// `at` (or the jump it folded to, `known` 1 + the folded condition), its then part starts at
+// `then_`, its else part at `else_` (-1: none), its join at `end`. A loop: entered from `at`, its
+// body starts at `head`, its exit is `end`. Its jumps carry tgInstrFlag_Struct, b = 1 + its index,
+// and imm2 in c: 1 to fall off (none printed), 2 a break, 3 a continue.
+typedef struct tgStruct {
+	u8  loop, known;
+	u32 cond;
+	i32 at, then_, else_, end, head;
+	bool broken; // the blocks were not placed as it nests: printed with labels and gotos
+} tgStruct;
+
+TG_ARRAY(tgStructArray, tgStruct);
 
 // A tyg_switch: a chain of equality tests on v, its cases in the procedure's sw_values and
 // sw_targets from `first`, which the C output prints as a switch.
@@ -691,6 +708,8 @@ struct tyg_proc {
 	tgBlockPtrArray   blocks;
 	tgBlockPtrArray   order;
 	tgSwitchArray     switches;   // tyg_switch's, for the C output
+	tgStructArray     structs;    // tyg_if's and tyg_loop's, for the C output
+	tgI32Array        s_open;     // the constructs open, innermost last
 	tgI64Array        sw_values;
 	tgI32Array        sw_targets;
 	tgBlock *         curr;
