@@ -320,6 +320,8 @@ struct tyg_type {
 	i64              count;    // Array
 	tyg_field *      fields;   // Record
 	i32              field_count;
+	char const *     c_name;   // Record: tyg_type_name's, for the C output, NULL: tyg_r<n>
+	char const **    c_fields; // its fields' names, an entry NULL: f<i>
 };
 
 TG_INTERNAL bool tg_t_is_scalar(tyg_type const *t) {
@@ -994,6 +996,7 @@ struct tyg_module {
 	tgStringArray      c_names;    // per symbol: its name in the C, empty until decided
 	tgMap              c_type_ids; // record and array tyg_type -> the N of struct tyg_r<N>
 	tgBytes            c_types;    // the definitions of those structs, in dependency order
+	tgTypePtrArray     c_named;    // the records tyg_type_name named, to keep their names apart
 	tgMap              c_lane_at;  // record tyg_type -> 1 + its fields' start in c_lanes, when the struct has lanes (a union), else 0
 	tgI32Array         c_lanes;    // per field of such a record, the lane its member sits in
 	tgMap              c_tag_ids;  // outer tyg_type -> the first of its tgMem tags, see tg_c_tag

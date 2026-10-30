@@ -304,6 +304,30 @@ static void build_select(void) {
 		tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_local(ly, 0), 0));
 	}
 	check(tyg_proc_end(p));
+	// int64_t tg_named(struct Point *q): records named for the C (tyg_type_name), struct Point
+	// { int64_t x; int32_t y; } and a second record asking for the name, Point_2 { int32_t z; }:
+	// q->y += 1; returns q->x * 10 + q->y, through a Point_2 local holding y
+	{
+		tyg_field pf[2] = { { ty(TYG_I64), 0 }, { ty(TYG_I32), 8 } };
+		const tyg_type *pt = tyg_type_record(m, 16, 8, pf, 2);
+		const char *pn[2] = { "x", "y" };
+		check(tyg_type_name(m, pt, "Point", pn));
+		tyg_field zf[1] = { { ty(TYG_I32), 0 } };
+		const tyg_type *zt = tyg_type_record(m, 4, 4, zf, 1);
+		const char *zn[1] = { "z" };
+		check(tyg_type_name(m, zt, "Point", zn));
+		p = begin("tg_named", TYG_SYM_GLOBAL, sig(ty(TYG_I64), tyg_type_ptr(m), NULL, NULL, 0));
+		tyg_val q = tyg_param(p, 0);
+		tyg_addr ay = tyg_at_field(tyg_at_val(q, 0), pt, 1);
+		tyg_store(p, TYG_I32, ay, tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I32, ay, 0), k32(p, 1)), 0);
+		tyg_local lz = tyg_local_typed(p, zt);
+		tyg_addr az = tyg_at_field(tyg_at_local(lz, 0), zt, 0);
+		tyg_store(p, TYG_I32, az, tyg_load(p, TYG_I32, ay, 0), 0);
+		tyg_val x = tyg_load(p, TYG_I64, tyg_at_field(tyg_at_val(q, 0), pt, 0), 0);
+		tyg_val y = tyg_convert(p, TYG_SEXT, TYG_I64, tyg_load(p, TYG_I32, az, 0));
+		tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_bin(p, TYG_MUL, x, k64(p, 10)), y));
+		check(tyg_proc_end(p));
+	}
 	// int64_t tg_entry_last(int64_t x): the entry jumps to a block filled last, which sets a local
 	// to 40 and jumps back to the body: x + 40, printed in order with no goto
 	p = begin("tg_entry_last", TYG_SYM_GLOBAL, sig(ty(TYG_I64), ty(TYG_I64), NULL, NULL, 0));

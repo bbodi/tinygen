@@ -1,6 +1,7 @@
 // The public types for the ABI (tyg_type), signatures (tyg_sig) and debug types
 // (tyg_dtype). They live in the module's arena, as long as the module.
 
+#include <ctype.h>
 #include <stdarg.h>
 
 ////////////////////////////////////////////////////////////////
@@ -143,6 +144,52 @@ const tyg_type *tyg_type_array(tyg_module *m, const tyg_type *elem, int64_t coun
 	t->size  = elem->size * count;
 	t->align = elem->align;
 	return t;
+}
+
+// Whether s is a C identifier.
+TG_INTERNAL bool tg_is_ident(char const *s) {
+	if (s == NULL || !(isalpha((unsigned char)s[0]) || s[0] == '_')) return false;
+	for (char const *q = s; *q; q++) if (!(isalnum((unsigned char)*q) || *q == '_')) return false;
+	return true;
+}
+
+TG_INTERNAL char *tg_arena_strdup(tgArena *a, char const *s) {
+	usize n = strlen(s) + 1;
+	char *d = (char *)tg_arena_alloc(a, (isize)n, 1);
+	memcpy(d, s, n);
+	return d;
+}
+
+int tyg_type_name(tyg_module *m, const tyg_type *record, const char *name, const char *const *field_names) {
+	if (m == NULL) return 1;
+	if (record == NULL || record->kind != tgT_Record || !tg_is_ident(name) || record->c_name != NULL) {
+		tg_set_error(m, "tyg_type_name: a record not named yet, and an identifier");
+		return 1;
+	}
+	if (tg_map_get(&m->c_type_ids, (u64)(uintptr_t)record) != NULL) {
+		tg_set_error(m, "tyg_type_name: the record is already in the C output");
+		return 1;
+	}
+	// a name another record has: name_2, name_3, ...
+	char buf[256];
+	snprintf(buf, sizeof(buf), "%s", name);
+	// the C's struct tags, which the debug types' names share (c_dtags): taken, a suffix
+	for (int k = 2; tg_strmap_get(&m->c_dtags, tg_str(buf)) != NULL; k++) snprintf(buf, sizeof(buf), "%s_%d", name, k);
+	tyg_type *t = (tyg_type *)record;
+	t->c_name = tg_arena_strdup(&m->arena, buf);
+	tg_strmap_set(&m->c_dtags, tg_str(t->c_name), 1);
+	if (field_names != NULL && record->field_count > 0) {
+		char const **fs = (char const **)tg_arena_alloc(&m->arena, (isize)sizeof(char *) * record->field_count, 8);
+		for (i32 i = 0; i < record->field_count; i++) {
+			char const *f = field_names[i];
+			bool ok = tg_is_ident(f);
+			for (i32 j = 0; ok && j < i; j++) ok = fs[j] == NULL || strcmp(fs[j], f) != 0;
+			fs[i] = ok ? tg_arena_strdup(&m->arena, f) : NULL;
+		}
+		t->c_fields = fs;
+	}
+	tg_array_add(&m->c_named, record);
+	return 0;
 }
 
 const tyg_type *tyg_type_record(tyg_module *m, int64_t size, int64_t align,

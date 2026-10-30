@@ -194,6 +194,11 @@ check_c_names() {
 		printf '%s\n' "$body" | grep -qF "$decl" || fail "cgen switch body: tg_switch_body has no '$decl'"
 	done
 	[ "$(printf '%s\n' "$body" | grep -c 'goto ')" = 1 ] || fail "cgen switch body: tg_switch_body has other gotos than the break out of the loop"
+	# named records (tyg_type_name): their names, their fields', and a repeated name's suffix
+	for decl in '^struct \(TYG_ALIGNED([0-9]*) \)\{0,1\}Point {$' '^	int64_t x;$' '^	int32_t y;$' '^struct \(TYG_ALIGNED([0-9]*) \)\{0,1\}Point_2 {$' \
+		'((struct Point \*)(.*))->y' '((struct Point_2 \*)(.*))->z'; do
+		grep -q "$decl" "$1" || fail "cgen named records: no line matches $decl"
+	done
 	# an entry block filled last prints first (tg_c_entry_first)
 	! sed -n '/^int64_t tg_entry_last(int64_t p0) {$/,/^}$/p' "$1" | grep -q 'goto ' ||
 		fail "cgen entry: tg_entry_last still jumps to its entry block"

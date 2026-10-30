@@ -538,7 +538,12 @@ TG_INTERNAL void tg_c_type_decl(tgModule *m, tgBytes *b, tyg_type const *t, char
 	case tgT_Ptr:  tg_c_printf(b, "void *%s", name); break;
 	case tgT_F80:  tg_c_printf(b, "TYG_F80%s%s", space, name); break;
 	case tgT_Array:
-	case tgT_Record: tg_c_printf(b, "struct tyg_r%d%s%s", tg_c_record(m, t), space, name); break;
+	case tgT_Record: {
+		i32 n = tg_c_record(m, t);
+		if (t->c_name) tg_c_printf(b, "struct %s%s%s", t->c_name, space, name);
+		else tg_c_printf(b, "struct tyg_r%d%s%s", n, space, name);
+		break;
+	}
 	}
 }
 
@@ -605,7 +610,8 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 		if (!natural) tg_c_puts(&b, "#pragma pack(push, 1)\n");
 		tg_c_puts(&b, "struct ");
 		if (!natural || t->align > max_align) tg_c_printf(&b, "TYG_ALIGNED(%lld) ", (long long)t->align);
-		tg_c_printf(&b, "tyg_r%d {\n", n);
+		if (t->c_name) tg_c_printf(&b, "%s {\n", t->c_name);
+		else tg_c_printf(&b, "tyg_r%d {\n", n);
 		if (lanes > 1) tg_c_puts(&b, "union {\n");
 		i32 pads = 0;
 		for (i32 l = 0; l < lanes || (l == 0 && !natural); l++) {
@@ -617,7 +623,7 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 				if (!natural && f->offset > at) tg_c_printf(&b, "\tunsigned char tyg_pad%d[%lld];\n", pads++, (long long)(f->offset - at));
 				char name[32];
 				snprintf(name, sizeof(name), "f%d", order[k]);
-				tg_c_member(m, &b, f->type, name);
+				tg_c_member(m, &b, f->type, t->c_fields && t->c_fields[order[k]] ? t->c_fields[order[k]] : name);
 				at = f->offset + f->type->size;
 			}
 			if (!natural && t->size > at) tg_c_printf(&b, "\tunsigned char tyg_pad%d[%lld];\n", pads++, (long long)(t->size - at));
@@ -638,12 +644,15 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 	}
 	// reading a struct out of a byte local through a cast breaks C's aliasing rules, so
 	// values move through memcpy, which the compilers turn into plain moves
+	char tag[300];
+	if (t->kind == tgT_Record && t->c_name) snprintf(tag, sizeof(tag), "%s", t->c_name);
+	else snprintf(tag, sizeof(tag), "tyg_r%d", n);
 	tg_c_printf(&b, "#if defined(__TINYC__)\n"
-	                "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { return *(struct tyg_r%d const *)p; }\n"
-	                "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { *(struct tyg_r%d *)p = x; }\n"
-	                "#else\n", n, n, n, n, n, n);
-	tg_c_printf(&b, "static TYG_UNUSED struct tyg_r%d tyg_r%d_get(char const *p) { struct tyg_r%d x; TYG_MEMCPY(&x, p, sizeof(x)); return x; }\n", n, n, n);
-	tg_c_printf(&b, "static TYG_UNUSED void tyg_r%d_set(char *p, struct tyg_r%d x) { TYG_MEMCPY(p, &x, sizeof(x)); }\n#endif\n", n, n);
+	                "static TYG_UNUSED struct %s tyg_r%d_get(char const *p) { return *(struct %s const *)p; }\n"
+	                "static TYG_UNUSED void tyg_r%d_set(char *p, struct %s x) { *(struct %s *)p = x; }\n"
+	                "#else\n", tag, n, tag, n, tag, tag);
+	tg_c_printf(&b, "static TYG_UNUSED struct %s tyg_r%d_get(char const *p) { struct %s x; TYG_MEMCPY(&x, p, sizeof(x)); return x; }\n", tag, n, tag);
+	tg_c_printf(&b, "static TYG_UNUSED void tyg_r%d_set(char *p, struct %s x) { TYG_MEMCPY(p, &x, sizeof(x)); }\n#endif\n", n, tag);
 	tg_array_add_elems(&m->c_types, b.data, b.count);
 	tg_array_free(&b);
 	return n;
@@ -1415,7 +1424,9 @@ TG_INTERNAL void tg_c_lvalue(tgProc *p, tgBytes *b, u32 tag, char const *addr, i
 		tg_c_printf(b, ")(%.*s))", (int)addr_len, addr);
 		return;
 	}
-	tg_c_printf(b, "((struct tyg_r%d *)(%.*s", tg_c_record(p->m, ct.outer), (int)addr_len, addr);
+	i32 rn = tg_c_record(p->m, ct.outer);
+	if (ct.outer->kind == tgT_Record && ct.outer->c_name) tg_c_printf(b, "((struct %s *)(%.*s", ct.outer->c_name, (int)addr_len, addr);
+	else tg_c_printf(b, "((struct tyg_r%d *)(%.*s", rn, (int)addr_len, addr);
 	if (ct.offset != 0 && !at_outer) tg_c_printf(b, " - %lld", (long long)ct.offset);
 	tg_c_puts(b, "))->");
 	for (int i = 0; i < n; i++) {
@@ -1430,7 +1441,8 @@ TG_INTERNAL void tg_c_lvalue(tgProc *p, tgBytes *b, u32 tag, char const *addr, i
 			lanes = tg_map_get(&p->m->c_lane_at, (u64)(uintptr_t)t);
 			if (i > 0) tg_c_puts(b, ".");
 			if (lanes != NULL) tg_c_printf(b, "u.l%d.", p->m->c_lanes.data[*lanes - 1 + steps[i]]);
-			tg_c_printf(b, "f%lld", (long long)steps[i]);
+			if (t->c_fields && t->c_fields[steps[i]]) tg_c_puts(b, t->c_fields[steps[i]]);
+			else tg_c_printf(b, "f%lld", (long long)steps[i]);
 			t = t->fields[steps[i]].type;
 		}
 	}

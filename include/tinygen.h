@@ -212,6 +212,10 @@ const tyg_type *tyg_type_scalar(tyg_module *m, tyg_scalar s);
 const tyg_type *tyg_type_int(tyg_module *m, tyg_scalar s, int is_signed);
 const tyg_type *tyg_type_ptr(tyg_module *m);
 const tyg_type *tyg_type_array(tyg_module *m, const tyg_type *elem, int64_t count);
+/* Names a record for the C output, before anything is printed with it: `struct name`, its fields
+   field_names[i] (NULL, or a NULL entry: f<i>). A name another record has gets a suffix; a field
+   name that is not an identifier or repeats one stays f<i>. Returns 0 on success. */
+int tyg_type_name(tyg_module *m, const tyg_type *record, const char *name, const char *const *field_names);
 const tyg_type *tyg_type_record(tyg_module *m, int64_t size, int64_t align,
                                 const tyg_field *fields, int count);
 
