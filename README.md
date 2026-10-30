@@ -168,7 +168,8 @@ The C reads like hand-written C rather than a dump of the IR:
   local whose address is never taken and that has the value's size. A local
   with no source name that is assigned once and read once in the same block is
   replaced by its expression, so a value passed through temporaries reads as
-  one expression.
+  one expression. Casts that change no bit (`(uint64_t)((int64_t)v)` of an
+  integer, a cast repeated) and doubled parentheses are dropped.
 - `tyg_local_typed(p, type)` declares a local with its C type. A load or store
   of the whole local is a plain assignment.
 - The structured builders `tyg_if`/`tyg_if_not`/`tyg_else`/`tyg_endif`,

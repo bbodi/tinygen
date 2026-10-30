@@ -2477,7 +2477,7 @@ TG_INTERNAL void tg_c_forward_vars(tgProc *p, tgCLine *ls, isize first, isize nl
 		isize alen = snprintf(assign, sizeof(assign), "\t%.*s = ", (int)nlen, name);
 		for (isize lj = la + 1; lj < nl; lj++) {
 			tgCLine *l = &ls[lj];
-			if (l->dead || strncmp(l->s, "#line", 5) == 0) continue;
+			if (l->dead || l->n <= 1 || strncmp(l->s, "#line", 5) == 0) continue;   // an empty line: a jump that falls off
 			if (l->s[0] == 'B' || !strncmp(l->s, "\tcase ", 6) || !strncmp(l->s, "\tdefault:", 9)) break;
 			isize at[64], na = tg_c_find_v(l->s, l->n, v, at, 64);
 			bool addr = na > 64;
@@ -2534,7 +2534,7 @@ TG_INTERNAL void tg_c_fold_locals(tgProc *p, tgCLine *ls, isize first, isize nl,
 		isize lj = li + 1;
 		for (; lj < nl; lj++) {
 			tgCLine const *l = &ls[lj];
-			if (l->dead || strncmp(l->s, "#line", 5) == 0) continue;
+			if (l->dead || l->n <= 1 || strncmp(l->s, "#line", 5) == 0) continue;   // an empty line: a jump that falls off
 			if (l->s[0] == 'B' || !strncmp(l->s, "\tcase ", 6) || !strncmp(l->s, "\tdefault:", 9)) break;
 			bool am = false;
 			if (tg_c_count_tok(l->s, l->n, name, nlen, &am) > 0) { found = true; break; }
@@ -2563,6 +2563,108 @@ TG_INTERNAL void tg_c_fold_locals(tgProc *p, tgCLine *ls, isize first, isize nl,
 		u->n = n;
 		a->dead = true;
 		*changed = true;
+	}
+}
+
+// A cast's width for the C integer types the printer spells, or 0.
+TG_INTERNAL int tg_c_int_width(char const *s, isize n) {
+	static char const *const ts[] = { "uint8_t", "int8_t", "uint16_t", "int16_t", "uint32_t", "int32_t", "uint64_t", "int64_t" };
+	for (int k = 0; k < 8; k++) if ((isize)strlen(ts[k]) == n && !memcmp(s, ts[k], (usize)n)) return 8 << (k / 2);
+	return 0;
+}
+
+// The end of the atom at s[i]: a parenthesized group or a token; i where there is none.
+TG_INTERNAL isize tg_c_atom_end(char const *s, isize n, isize i) {
+	if (i < n && s[i] == '(') {
+		int d = 0;
+		for (isize e = i; e < n; e++) {
+			if (s[e] == '(') d++;
+			else if (s[e] == ')' && --d == 0) return e + 1;
+		}
+		return i;
+	}
+	isize e = i;
+	while (e < n && tg_c_idch(s[e])) e++;
+	return e;
+}
+
+// Whether s[i..e) is an integer for certain: an integer value vN, an integer cast of an atom
+// that ends at e, or one of these in parentheses.
+TG_INTERNAL bool tg_c_int_expr(tgProc *p, char const *s, isize i, isize e) {
+	if (i >= e) return false;
+	if (s[i] == 'v') {
+		u32 v = 0;
+		isize k = i + 1;
+		while (k < e && s[k] >= '0' && s[k] <= '9') v = v * 10 + (u32)(s[k++] - '0');
+		return k == e && k > i + 1 && v < (u32)p->vregs.count && tg_type_is_int(p->vregs.data[v]) && !p->c_ptr[v];
+	}
+	if (s[i] != '(') return false;
+	isize k = i + 1;
+	while (k < e && tg_c_idch(s[k])) k++;
+	if (k < e && s[k] == ')' && tg_c_int_width(s + i + 1, k - i - 1) > 0) return tg_c_atom_end(s, e, k + 1) == e && e > k + 1;
+	return tg_c_atom_end(s, e, i) == e && tg_c_int_expr(p, s, i + 1, e - 1);
+}
+
+// (A)((B)E) with A and B integer types of one width and E an integer is (A)(E): B changes no
+// bit; so is (A)((A)E) whatever E is.
+TG_INTERNAL void tg_c_casts(tgProc *p, tgCLine *l) {
+	// ((X)) is (X), X with no comma of its own
+	for (isize i = 0; i + 1 < l->n; i++) {
+		if (l->s[i] != '(' || l->s[i + 1] != '(') continue;
+		isize m = tg_c_atom_end(l->s, l->n, i + 1);
+		if (m == i + 1 || m >= l->n || l->s[m] != ')') continue;
+		int d = 0;
+		bool comma = false;
+		for (isize k = i + 2; k < m - 1 && !comma; k++) {
+			if (l->s[k] == '(') d++;
+			else if (l->s[k] == ')') d--;
+			else if (l->s[k] == ',' && d == 0) comma = true;
+		}
+		if (comma) continue;
+		memmove(l->s + m, l->s + m + 1, (usize)(l->n - m));   // the outer close, then the open
+		memmove(l->s + i, l->s + i + 1, (usize)(l->n - 1 - i));
+		l->n -= 2;
+		i--;
+		if (i < -1) i = -1;
+	}
+	for (isize i = 0; i + 4 < l->n; i++) {
+		if (l->s[i] != '(' || (i > 0 && tg_c_idch(l->s[i - 1]))) continue;
+		isize j = i + 1;
+		while (j < l->n && tg_c_idch(l->s[j])) j++;
+		int wa = tg_c_int_width(l->s + i + 1, j - i - 1);
+		if (wa == 0 || j + 2 >= l->n || l->s[j] != ')' || l->s[j + 1] != '(' || l->s[j + 2] != '(') continue;
+		isize k = j + 3;
+		while (k < l->n && tg_c_idch(l->s[k])) k++;
+		if (k >= l->n || l->s[k] != ')' || tg_c_int_width(l->s + j + 3, k - j - 3) != wa) continue;
+		isize e = tg_c_atom_end(l->s, l->n, k + 1);   // B's operand, the whole of A's
+		bool same = k - j - 3 == j - i - 1 && !memcmp(l->s + i + 1, l->s + j + 3, (usize)(j - i - 1));
+		if (e == k + 1 || e >= l->n || l->s[e] != ')' || !(same || tg_c_int_expr(p, l->s, k + 1, e))) continue;
+		isize cut = k + 1 - (j + 2);   // (A)( (B) E) -> (A)( E)
+		memmove(l->s + j + 2, l->s + k + 1, (usize)(l->n - k - 1) + 1);
+		l->n -= cut;
+		i--;
+	}
+}
+
+// A goto to the label right after it goes, and a label no goto names any more.
+TG_INTERNAL void tg_c_labels(tgCLine *ls, isize first, isize nl) {
+	for (isize li = first; li < nl; li++) {
+		tgCLine *l = &ls[li];
+		if (l->dead || strncmp(l->s, "\tgoto B", 7) != 0) continue;
+		isize lj = li + 1;
+		while (lj < nl && (ls[lj].dead || ls[lj].n <= 1 || strncmp(ls[lj].s, "#line", 5) == 0)) lj++;
+		if (lj < nl && ls[lj].n == l->n - 5 && !memcmp(ls[lj].s, l->s + 6, (usize)(l->n - 7)) &&
+		    !strcmp(ls[lj].s + ls[lj].n - 2, ":;"))
+			l->dead = true;   // "\tgoto Bn;" before "Bn:;"
+	}
+	for (isize li = first; li < nl; li++) {
+		tgCLine *l = &ls[li];
+		if (l->dead || l->s[0] != 'B' || l->n < 4 || strcmp(l->s + l->n - 2, ":;") != 0) continue;
+		char ref[32];
+		snprintf(ref, sizeof(ref), "goto %.*s;", (int)(l->n - 2), l->s);
+		bool named = false;
+		for (isize lj = first; lj < nl && !named; lj++) named = !ls[lj].dead && strstr(ls[lj].s, ref) != NULL;
+		if (!named) l->dead = true;
 	}
 }
 
@@ -2604,6 +2706,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 			i = j - 1;
 		}
 	}
+	tg_c_labels(ls, first, nl);
 	for (isize li = first; li < nl; li++) {
 		char const *expr;
 		isize elen;
@@ -2644,7 +2747,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		bool pure = tg_c_pure(expr, elen), found = false;
 		isize lj = li + 1;
 		for (; lj < nl; lj++) {
-			if (ls[lj].dead || strncmp(ls[lj].s, "#line", 5) == 0) continue;
+			if (ls[lj].dead || ls[lj].n <= 1 || strncmp(ls[lj].s, "#line", 5) == 0) continue;
 			if (ls[lj].s[0] == 'B' || !strncmp(ls[lj].s, "\tcase ", 6) || !strncmp(ls[lj].s, "\tdefault:", 9))
 				break;   // a label: another block
 			isize at[1];
@@ -2661,28 +2764,16 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		}
 		free(by);
 	}
+	tg_c_labels(ls, first, nl);
 	for (bool changed = true; changed;) {
 		changed = false;
 		tg_c_fold_locals(p, ls, first, nl, &changed);
 	}
-	// a goto to the label right after it goes, and a label no goto names any more
-	for (isize li = first; li < nl; li++) {
-		tgCLine *l = &ls[li];
-		if (l->dead || strncmp(l->s, "\tgoto B", 7) != 0) continue;
-		isize lj = li + 1;
-		while (lj < nl && (ls[lj].dead || ls[lj].n == 0 || strncmp(ls[lj].s, "#line", 5) == 0)) lj++;
-		if (lj < nl && ls[lj].n == l->n - 5 && !memcmp(ls[lj].s, l->s + 6, (usize)(l->n - 7)) &&
-		    !strcmp(ls[lj].s + ls[lj].n - 2, ":;"))
-			l->dead = true;   // "\tgoto Bn;" before "Bn:;"
-	}
-	for (isize li = first; li < nl; li++) {
-		tgCLine *l = &ls[li];
-		if (l->dead || l->s[0] != 'B' || l->n < 4 || strcmp(l->s + l->n - 2, ":;") != 0) continue;
-		char ref[32];
-		snprintf(ref, sizeof(ref), "goto %.*s;", (int)(l->n - 2), l->s);
-		bool named = false;
-		for (isize lj = first; lj < nl && !named; lj++) named = !ls[lj].dead && strstr(ls[lj].s, ref) != NULL;
-		if (!named) l->dead = true;
+	for (isize li = first; li < nl; li++) if (!ls[li].dead) {
+		for (isize n = -1; n != ls[li].n;) {   // each rule makes room for the other
+			n = ls[li].n;
+			tg_c_casts(p, &ls[li]);
+		}
 	}
 	// the declarations of the values folded away, and of the locals with no name the body names
 	// no more
