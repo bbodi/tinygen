@@ -2519,6 +2519,28 @@ TG_INTERNAL isize tg_c_count_tok(char const *s, isize n, char const *name, isize
 	return c;
 }
 
+// Where each value vN is read: per value, a chain through a pool of (line, next) entries, so
+// substituting a value touches only its lines instead of every line of the procedure.
+typedef struct tgCOcc { isize line, next; } tgCOcc;
+typedef struct tgCOccs { tgCOcc *e; isize n, cap; isize *head; } tgCOccs;
+TG_INTERNAL void tg_c_occ_add(tgCOccs *o, u32 v, isize line) {
+	if (o->head[v] >= 0 && o->e[o->head[v]].line == line) return;
+	if (o->n == o->cap) { o->cap = o->cap ? o->cap * 2 : 256; o->e = (tgCOcc *)realloc(o->e, (usize)o->cap * sizeof(tgCOcc)); }
+	o->e[o->n].line = line; o->e[o->n].next = o->head[v]; o->head[v] = o->n++;
+}
+// Records line for every token vN in s.
+TG_INTERNAL void tg_c_occ_scan(tgCOccs *o, char const *s, isize n, isize line, isize nv) {
+	for (isize i = 0; i < n; i++) {
+		if (s[i] != 'v' || (i > 0 && tg_c_idch(s[i - 1]))) continue;
+		isize j = i + 1;
+		u32 v = 0;
+		while (j < n && s[j] >= '0' && s[j] <= '9') v = v * 10 + (u32)(s[j++] - '0');
+		if (j == i + 1 || (j < n && tg_c_idch(s[j])) || v >= (u32)nv) continue;
+		tg_c_occ_add(o, v, line);
+		i = j - 1;
+	}
+}
+
 // A local with no name (lN) assigned `lN = (EXPR);` and read on one later line of its block,
 // and named nowhere else, gives way to EXPR in that read: a value passed through temporaries
 // (a call's result, then its destination) reads as one expression. One never read goes.
@@ -2711,6 +2733,9 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 	isize nv = p->vregs.count + 1;
 	isize *uses = (isize *)calloc((usize)nv, sizeof(isize));
 	u8 *amp = (u8 *)calloc((usize)nv, 1), *gone = (u8 *)calloc((usize)nv, 1);
+	tgCOccs occ = {0};
+	occ.head = (isize *)malloc((usize)nv * sizeof(isize));
+	for (isize v = 0; v < nv; v++) occ.head[v] = -1;
 	for (isize li = first; li < nl; li++) {
 		char const *s = ls[li].s;
 		if (ls[li].dead) continue;
@@ -2722,6 +2747,7 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 			if (j == i + 1 || (j < ls[li].n && tg_c_idch(s[j])) || v >= (u32)nv) continue;
 			uses[v]++;
 			if (i > 0 && s[i - 1] == '&') amp[v] = 1;
+			tg_c_occ_add(&occ, v, li);
 			i = j - 1;
 		}
 	}
@@ -2749,8 +2775,10 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		if (typed || (konst && wide && t == tgType_I64 && expr[0] == 'U') || (konst && t == tgType_I32))
 			snprintf(cast, sizeof(cast), "(%s)", T);
 		if (konst) {
-			for (isize lj = first; lj < nl; lj++)
+			for (isize e = occ.head[v]; e >= 0; e = occ.e[e].next) {
+				isize lj = occ.e[e].line;
 				if (lj != li && !ls[lj].dead) tg_c_subst(&ls[lj], v, by, blen, cast[0] ? cast : NULL);
+			}
 			ls[li].dead = true;
 			gone[v] = 1;
 			free(by);
@@ -2778,11 +2806,13 @@ TG_INTERNAL void tg_c_fold(tgProc *p, tgBytes *b, isize decl, isize body) {
 		}
 		if (found) {
 			tg_c_subst(&ls[lj], v, by, blen, cast[0] ? cast : NULL);
+			tg_c_occ_scan(&occ, by, blen, lj, nv);   // the values in by are read on lj now
 			ls[li].dead = true;
 			gone[v] = 1;
 		}
 		free(by);
 	}
+	free(occ.e); free(occ.head);
 	tg_c_labels(ls, first, nl);
 	for (bool changed = true; changed;) {
 		changed = false;
