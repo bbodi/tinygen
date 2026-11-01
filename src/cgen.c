@@ -197,7 +197,43 @@ enum {
 	tgCUse_Atomics = 1, // tg_c_atomics_prelude
 	tgCUse_Intrin  = 2, // tg_c_intrin_prelude
 	tgCUse_Ld      = 4, // tg_c_ld_prelude
+	tgCUse_Ovf     = 8, // tg_c_ovf_prelude
 };
+
+// TYG_OVF_<op>_<bits>(a, b, &r) for tgOp_AddOvf and the like, op SADD, UADD, SSUB, USUB, SMUL or
+// UMUL: r = a op b wrapped, and whether it overflowed. a, b and r are uintN_t. gcc and clang have
+// builtins for them; the others get functions.
+TG_INTERNAL void tg_c_ovf_prelude(tgBytes *b) {
+	static char const *const ops[] = {"ADD", "SUB", "MUL"}, *const builtins[] = {"add", "sub", "mul"};
+	tg_c_puts(b, "#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)\n");
+	for (int w = 0; w < 4; w++) {
+		int n = 8 << w;
+		for (int op = 0; op < 3; op++) {
+			tg_c_printf(b, "#define TYG_OVF_S%s_%d(a, b, r) __builtin_%s_overflow((int%d_t)(a), (int%d_t)(b), (int%d_t *)(r))\n", ops[op], n, builtins[op], n, n, n);
+			tg_c_printf(b, "#define TYG_OVF_U%s_%d(a, b, r) __builtin_%s_overflow((uint%d_t)(a), (uint%d_t)(b), (uint%d_t *)(r))\n", ops[op], n, builtins[op], n, n, n);
+		}
+	}
+	tg_c_puts(b, "#else\n");
+	for (int w = 0; w < 4; w++) {
+		int n = 8 << w;
+		// the sign bit of a signed add or sub overflow: the operands' signs agree and the result's differs
+		tg_c_printf(b, "static TYG_UNUSED uint8_t TYG_OVF_SADD_%d(uint%d_t a, uint%d_t b, uint%d_t *r) { *r = (uint%d_t)(a + b); return (uint8_t)(((a ^ *r) & (b ^ *r)) >> %d & 1); }\n", n, n, n, n, n, n - 1);
+		tg_c_printf(b, "static TYG_UNUSED uint8_t TYG_OVF_UADD_%d(uint%d_t a, uint%d_t b, uint%d_t *r) { *r = (uint%d_t)(a + b); return *r < a; }\n", n, n, n, n, n);
+		tg_c_printf(b, "static TYG_UNUSED uint8_t TYG_OVF_SSUB_%d(uint%d_t a, uint%d_t b, uint%d_t *r) { *r = (uint%d_t)(a - b); return (uint8_t)(((a ^ b) & (a ^ *r)) >> %d & 1); }\n", n, n, n, n, n, n - 1);
+		tg_c_printf(b, "static TYG_UNUSED uint8_t TYG_OVF_USUB_%d(uint%d_t a, uint%d_t b, uint%d_t *r) { *r = (uint%d_t)(a - b); return a < b; }\n", n, n, n, n, n);
+		if (n < 64) {
+			// exact in 64 bits
+			tg_c_printf(b, "static TYG_UNUSED uint8_t TYG_OVF_SMUL_%d(uint%d_t a, uint%d_t b, uint%d_t *r) { int64_t w = (int64_t)(int%d_t)a * (int%d_t)b; *r = (uint%d_t)w; return w != (int%d_t)w; }\n", n, n, n, n, n, n, n, n);
+			tg_c_printf(b, "static TYG_UNUSED uint8_t TYG_OVF_UMUL_%d(uint%d_t a, uint%d_t b, uint%d_t *r) { uint64_t w = (uint64_t)a * b; *r = (uint%d_t)w; return (w >> %d) != 0; }\n", n, n, n, n, n, n);
+		} else {
+			tg_c_puts(b, "static TYG_UNUSED uint8_t TYG_OVF_SMUL_64(uint64_t a, uint64_t b, uint64_t *r) {\n"
+			             "\tint64_t x = (int64_t)a, y = (int64_t)b;\n\t*r = a * b;\n"
+			             "\tif (x == 0) return 0;\n\tif (x == -1) return y == INT64_MIN;\n\treturn (int64_t)*r / x != y;\n}\n");
+			tg_c_puts(b, "static TYG_UNUSED uint8_t TYG_OVF_UMUL_64(uint64_t a, uint64_t b, uint64_t *r) { *r = a * b; return a != 0 && *r / a != b; }\n");
+		}
+	}
+	tg_c_puts(b, "#endif\n");
+}
 
 // The intrinsics and alloca. CTZ and CLZ of zero are the width, like the lowerings'.
 static char const tg_c_intrin_prelude[] =
@@ -1214,6 +1250,9 @@ TG_INTERNAL bool tg_c_intish(tgInstr const *in, u8 const *intish, u8 const *loca
 	case tgOp_Popcount:
 	case tgOp_Ctz:
 	case tgOp_Clz:
+	case tgOp_AddOvf:
+	case tgOp_SubOvf:
+	case tgOp_MulOvf:
 		return true;
 	case tgOp_Add:
 	case tgOp_Sub:    return intish[in->a] && intish[in->b];
@@ -2163,6 +2202,16 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 		tg_c_atomic(p, b, in, size * 8, amp);
 		break;
 	case tgOp_Sqrt: tg_c_printf(b, "v%u = %s(v%u);", d, t == tgType_F32 ? "sqrtf" : "sqrt", a); break;
+	case tgOp_AddOvf: op = "ADD"; goto ovf;
+	case tgOp_SubOvf: op = "SUB"; goto ovf;
+	case tgOp_MulOvf: op = "MUL"; goto ovf;
+	ovf:
+		// the flag is the statement's value, the result is written through &vN; a volatile vN
+		// (c_returns_twice) through a plain temporary
+		p->c_uses |= tgCUse_Ovf;
+		if (p->c_returns_twice) tg_c_printf(b, "{ %s tyg_r; v%u = TYG_OVF_%c%s_%d(%s, %s, &tyg_r); v%u = tyg_r; }", T, c, in->aux ? 'S' : 'U', op, size * 8, A, B, d);
+		else tg_c_printf(b, "v%u = TYG_OVF_%c%s_%d(%s, %s, &v%u);", c, in->aux ? 'S' : 'U', op, size * 8, A, B, d);
+		break;
 	case tgOp_Bswap:    op = "BSWAP"; goto intrin;
 	case tgOp_Popcount: op = "POPCOUNT"; goto intrin;
 	case tgOp_Ctz:      op = "CTZ"; goto intrin;
@@ -3100,6 +3149,7 @@ TG_INTERNAL bool tg_write_c(tgModule *m, tgBytes *out) {
 		tg_c_puts(out, tg_c_prelude);
 		if (m->c_uses & tgCUse_Atomics) tg_c_atomics_prelude(out);
 		if (m->c_uses & tgCUse_Intrin) tg_c_puts(out, tg_c_intrin_prelude);
+		if (m->c_uses & tgCUse_Ovf) tg_c_ovf_prelude(out);
 		if (m->c_uses & tgCUse_Ld) {
 			// the C compiler's long double has the size the module laid it out with
 			tg_c_printf(out, "typedef char tyg_f80_size[sizeof(TYG_F80) == %lld ? 1 : -1];\n", (long long)tyg_type_size(tyg_type_scalar(m, TYG_F80)));

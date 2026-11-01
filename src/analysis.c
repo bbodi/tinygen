@@ -130,6 +130,8 @@ TG_FORCEINLINE void tg_for_each_vreg(tgProc *p, tgInstr const *in, tgVregProc f,
 	case tgOp_StackRestore:
 		f(ctx, in->a, false);
 		break;
+	case tgOp_AddOvf:
+	case tgOp_SubOvf:
 	case tgOp_MulOvf:
 		f(ctx, in->a, false);
 		f(ctx, in->b, false);
@@ -1234,6 +1236,8 @@ TG_INTERNAL void tg__rename_uses(tgProc *p, tgInstr *in, u32 const *map) {
 	case tgOp_MemMove:
 	case tgOp_VaCopy:
 	case tgOp_Valgrind:
+	case tgOp_AddOvf:
+	case tgOp_SubOvf:
 	case tgOp_MulOvf:
 		TG_RN(in->a);
 		TG_RN(in->b);

@@ -378,6 +378,19 @@ tyg_val tyg_cmp(tyg_proc *p, tyg_cond c, tyg_val a, tyg_val b);           /* TYG
 tyg_val tyg_convert(tyg_proc *p, tyg_conv op, tyg_scalar to, tyg_val a);
 tyg_val tyg_select(tyg_proc *p, tyg_val cond, tyg_val a, tyg_val b);
 
+/* Arithmetic that tells whether it overflowed: the result is a op b at the operands' integer type,
+   wrapped like tyg_bin's, and *overflow is a TYG_I8 1 where the exact result does not fit the
+   type, read as signed or unsigned by the op. A branch on *overflow right after it is one jump on
+   the flags (x86-64 jo, jb; arm64 b.vs, b.hs, b.lo); the C output calls __builtin_add_overflow and
+   the like. */
+typedef enum tyg_ovfop {
+	TYG_SADD_OVF, TYG_UADD_OVF,
+	TYG_SSUB_OVF, TYG_USUB_OVF,
+	TYG_SMUL_OVF, TYG_UMUL_OVF,
+} tyg_ovfop;
+
+tyg_val tyg_bin_ovf(tyg_proc *p, tyg_ovfop op, tyg_val a, tyg_val b, tyg_val *overflow);
+
 /* Control flow */
 void tyg_jump(tyg_proc *p, tyg_block target);
 void tyg_branch(tyg_proc *p, tyg_val cond, tyg_block if_true, tyg_block if_false);

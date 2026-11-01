@@ -461,6 +461,79 @@ TG_INTERNAL u32 tg_convop(tgProc *p, tgOp op, tgType dst, tgType src, u32 a) {
 	}
 }
 
+// x op y at t's width in *r, and whether the exact result does not fit t, signed or unsigned;
+// op is tgOp_Add, tgOp_Sub or tgOp_Mul.
+TG_INTERNAL bool tg_fold_ovf(tgOp op, bool sgn, tgType t, i64 x, i64 y, i64 *r) {
+	u64 mask = tg_width_mask(t);
+	u64 ux = (u64)x & mask, uy = (u64)y & mask;
+	u64 w = op == tgOp_Add ? ux + uy : op == tgOp_Sub ? ux - uy : ux * uy;
+	*r = tg_fold_norm(t, (i64)w);
+	if (!sgn) {
+		if (op == tgOp_Add) return (w & mask) < ux;
+		if (op == tgOp_Sub) return ux < uy;
+		return ux != 0 && (w & mask) / ux != uy;
+	}
+	x = tg_fold_norm(t, x);
+	y = tg_fold_norm(t, y);
+	if (tg_type_size(t) < 8) {
+		// exact in 64 bits
+		i64 e = op == tgOp_Add ? x + y : op == tgOp_Sub ? x - y : x * y;
+		return e != *r;
+	}
+	if (op == tgOp_Add) return ((x ^ *r) & (y ^ *r)) < 0;
+	if (op == tgOp_Sub) return ((x ^ y) & (x ^ *r)) < 0;
+	if (x == 0) return false;
+	if (x == -1) return y == INT64_MIN;
+	return *r / x != y;
+}
+
+// a op b, see tgOp_AddOvf, with *ovf the overflow flag; op is tgOp_Add, tgOp_Sub or tgOp_Mul.
+TG_INTERNAL u32 tg_ovfop(tgProc *p, tgOp op, bool sgn, tgType t, u32 a, u32 b, u32 *ovf) {
+	i64 x = 0, y = 0, r = 0;
+	bool kx = tg_known(p, a, &x), ky = tg_known(p, b, &y);
+	if (kx && ky) {
+		*ovf = tg_iconst(p, tgType_I8, tg_fold_ovf(op, sgn, t, x, y, &r));
+		return tg_iconst(p, t, r);
+	}
+	// the operations that cannot overflow
+	if (ky) {
+		u64 uy = (u64)y & tg_width_mask(t);
+		if ((op != tgOp_Mul && uy == 0) || (op == tgOp_Mul && uy <= 1)) {
+			*ovf = tg_iconst(p, tgType_I8, 0);
+			return uy == 0 && op == tgOp_Mul ? b : a;
+		}
+	}
+	if (kx && op != tgOp_Sub) {
+		u64 ux = (u64)x & tg_width_mask(t);
+		if ((op == tgOp_Add && ux == 0) || (op == tgOp_Mul && ux <= 1)) {
+			*ovf = tg_iconst(p, tgType_I8, 0);
+			return ux == 0 && op == tgOp_Mul ? a : b;
+		}
+	}
+	if (tg_type_size(t) < 4 && !tg_is_c_output()) {
+		// the machine ops are 32 and 64 bit: compute exactly in 32 bits, and see that the result
+		// survives the trip to t and back
+		tgOp ext = sgn ? tgOp_Sext : tgOp_Zext;
+		u32 wa = tg_convop(p, ext, tgType_I32, t, a), wb = tg_convop(p, ext, tgType_I32, t, b);
+		u32 w = tg_binop(p, op, tgType_I32, wa, wb);
+		u32 res = tg_convop(p, tgOp_Trunc, t, tgType_I32, w);
+		*ovf = tg_cmp(p, tgCond_NE, tgType_I32, tg_convop(p, ext, tgType_I32, t, res), w);
+		return res;
+	}
+	{
+		tgInstr i = tg_instr_t(op == tgOp_Add ? tgOp_AddOvf : op == tgOp_Sub ? tgOp_SubOvf : tgOp_MulOvf, t);
+		i.aux = sgn;
+		i.dst = tg_new_vreg(p, t);
+		i.c = tg_new_vreg(p, tgType_I8);
+		i.a = a;
+		i.b = b;
+		tg_emit(p, i);
+		tg_note_umax(p, i.c, 1);
+		*ovf = i.c;
+		return i.dst;
+	}
+}
+
 TG_INTERNAL u32 tg_select(tgProc *p, tgType t, u32 cond, u32 a, u32 b) {
 	i64 c = 0;
 	if (tg_known(p, cond, &c)) return (c & 0xff) != 0 ? a : b;

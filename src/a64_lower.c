@@ -779,16 +779,20 @@ TG_INTERNAL i32 a64_test_bool(a64Lower *L, u32 v) {
 // Instructions
 ////////////////////////////////////////////////////////////////
 
-// Ends a compare: the flags hold `c`, kept for the next instruction or put in dst.
-TG_INTERNAL void a64_compare_result(a64Lower *L, tgInstr const *in, a64Cond c) {
+// Ends a compare: the flags hold `c`, kept for the next instruction or put in the bool v.
+TG_INTERNAL void a64_flags_result(a64Lower *L, u32 v, a64Cond c) {
 	if (L->fuse) {
-		L->flags_vreg = in->dst;
+		L->flags_vreg = v;
 		L->flags_cond = c;
 		return;
 	}
-	u8 d = a64_dst(L, in->dst, A64_T0);
+	u8 d = a64_dst(L, v, A64_T0);
 	a64_cset(&L->a, d, c);
-	a64_put(L, in->dst, d);
+	a64_put(L, v, d);
+}
+
+TG_INTERNAL void a64_compare_result(a64Lower *L, tgInstr const *in, a64Cond c) {
+	a64_flags_result(L, in->dst, c);
 }
 
 // A logical immediate for k as a `size` byte operand, whose higher bytes mean nothing: k
@@ -1508,6 +1512,20 @@ TG_INTERNAL void a64_lower_instr(a64Lower *L, tgInstr const *in) {
 		a64_put(L, in->dst, d);
 		break;
 	}
+	case tgOp_AddOvf:
+	case tgOp_SubOvf: {
+		// adds, subs: V for signed; C for unsigned, set on a carry out of an add and clear on a
+		// borrow from a sub
+		bool sgn = in->aux != 0;
+		TG_ASSERT(size == 4 || size == 8);
+		u8 ra = a64_src(L, in->a, A64_T0, size, tgExt_None);
+		u8 rb = a64_src(L, in->b, A64_T1, size, tgExt_None);
+		bool add = in->op == tgOp_AddOvf;
+		a64_emit(a, a64_sf(size) | (add ? 0x2B000000u : 0x6B000000u) | ((u32)rb << 16) | ((u32)ra << 5) | A64_T2);
+		a64_put(L, in->dst, A64_T2); // a mov or a store, the flags stay
+		a64_flags_result(L, in->c, sgn ? A64_VS : add ? A64_HS : A64_LO);
+		break;
+	}
 	case tgOp_MulOvf: {
 		bool sgn = in->aux != 0;
 		TG_ASSERT(size == 4 || size == 8);
@@ -1533,9 +1551,8 @@ TG_INTERNAL void a64_lower_instr(a64Lower *L, tgInstr const *in) {
 				a64_cmp(a, A64_T3, XZR);
 			}
 		}
-		a64_cset(a, A64_T3, A64_NE);
 		a64_put(L, in->dst, A64_T2);
-		a64_put(L, in->c, A64_T3);
+		a64_flags_result(L, in->c, A64_NE);
 		break;
 	}
 	case tgOp_Bswap: {
@@ -1589,8 +1606,8 @@ TG_INTERNAL void a64_lower_instr(a64Lower *L, tgInstr const *in) {
 
 // Whether `in` is a compare whose result only feeds the next instruction `n` through the flags.
 TG_INTERNAL bool a64_can_fuse(a64Lower *L, tgInstr const *in, tgInstr const *n) {
-	if (in->op != tgOp_ICmp && in->op != tgOp_FCmp) return false;
-	u32 v = in->dst;
+	if (in->op != tgOp_ICmp && in->op != tgOp_FCmp && !tg_op_is_ovf(in->op)) return false;
+	u32 v = tg_op_is_ovf(in->op) ? in->c : in->dst; // the overflow flag
 	if (v == 0 || L->uses.data[v] != 1 || !L->in_block.data[v]) return false;
 	switch (n->op) {
 	case tgOp_Branch:
@@ -1714,7 +1731,7 @@ TG_INTERNAL void a64_lower_at(a64Lower *L, tgBlock *b, isize i, i32 next_block) 
 	L->next_block = i+1 == b->instrs.count ? next_block : -1;
 	L->fuse = false;
 	L->fold_addr = false;
-	if (in->op == tgOp_ICmp || in->op == tgOp_FCmp) {
+	if (in->op == tgOp_ICmp || in->op == tgOp_FCmp || tg_op_is_ovf(in->op)) {
 		isize j = a64_next_code(L, b, i);
 		L->fuse = j >= 0 && a64_can_fuse(L, in, &b->instrs.data[j]);
 	} else if (in->op == tgOp_Shl) {

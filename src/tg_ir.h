@@ -196,7 +196,9 @@ enum {
 	tgOp_Ctz,         // count trailing zeros, defined for zero
 	tgOp_Clz,         // count leading zeros, defined for zero
 	tgOp_Syscall,     // imm = index into proc->calls (args only)
-	tgOp_MulOvf,      // dst = a * b, c = overflowed; aux = 1 if signed
+	tgOp_AddOvf,      // dst = a + b, c(i8) = overflowed; aux = 1 if signed. Narrow types only in the C output
+	tgOp_SubOvf,      // dst = a - b, like AddOvf
+	tgOp_MulOvf,      // dst = a * b, like AddOvf
 	tgOp_MulHiU,      // dst = high 64 bits of the unsigned product a * b
 	tgOp_Cpuid,       // [mem] = eax, ebx, ecx, edx of cpuid(eax = a, ecx = b)
 	tgOp_Xgetbv,      // [mem] = eax, edx of xgetbv(ecx = a)
@@ -285,6 +287,9 @@ enum {
 };
 
 TG_ARRAY(tgInstrArray, tgInstr);
+
+// An arithmetic op that also gives its overflow flag, in c.
+TG_INTERNAL bool tg_op_is_ovf(tgOp op) { return op == tgOp_AddOvf || op == tgOp_SubOvf || op == tgOp_MulOvf; }
 
 TG_INTERNAL tgInstr tg_instr(tgOp op) {
 	tgInstr i;

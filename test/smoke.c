@@ -772,6 +772,80 @@ static void build_store_fwd(void) {
 	check(tyg_proc_end(p));
 }
 
+// Overflow checks, for each op of tyg_ovfop and each width N, on T the signed or unsigned intN:
+//   long long tg_ovf_<op>N(T a, T b, T *r)  { *r = a op b; return overflowed; }
+//   long long tg_ovfb_<op>N(T a, T b, T *r) { if overflowed return 1; *r = a op b; return 0; }
+// The second branches on the flag right after the op. tg_ovf_fold(res) does the cases of the
+// table tg_ovf_cases on constants: res[2i] the result, sign or zero extended, res[2i+1] the flag.
+static const char *const ovf_names[6] = {"sadd", "uadd", "ssub", "usub", "smul", "umul"};
+
+static void build_ovf(void) {
+	static const tyg_scalar types[4] = {TYG_I8, TYG_I16, TYG_I32, TYG_I64};
+	for (int w = 0; w < 4; w++) {
+		for (int op = 0; op < 6; op++) {
+			for (int branch = 0; branch < 2; branch++) {
+				char name[32];
+				tyg_scalar st = types[w];
+				const tyg_type *t = tyg_type_int(m, st, op % 2 == 0);
+				const tyg_type *params[3] = {t, t, tyg_type_ptr(m)};
+				tyg_sig *sig = tyg_sig_new(m, i64t(), params, 3, 0);
+				snprintf(name, sizeof(name), "tg_ovf%s_%s%d", branch ? "b" : "", ovf_names[op], 8 << w);
+				tyg_proc *p = tyg_proc_begin(m, tyg_symbol(m, name, TYG_SYM_FUNC | TYG_SYM_GLOBAL), sig);
+				tyg_loc(p, file, 90, 1);
+				tyg_val ovf, r = tyg_bin_ovf(p, (tyg_ovfop)op, tyg_param(p, 0), tyg_param(p, 1), &ovf);
+				if (branch) {
+					tyg_block yes = tyg_block_new(p), no = tyg_block_new(p);
+					tyg_branch(p, ovf, yes, no);
+					tyg_block_set(p, yes);
+					tyg_ret(p, tyg_iconst(p, TYG_I64, 1));
+					tyg_block_set(p, no);
+					tyg_store(p, st, tyg_at_val(tyg_param(p, 2), 0), r, 0);
+					tyg_ret(p, tyg_iconst(p, TYG_I64, 0));
+				} else {
+					tyg_store(p, st, tyg_at_val(tyg_param(p, 2), 0), r, 0);
+					tyg_ret(p, tyg_convert(p, TYG_ZEXT, TYG_I64, ovf));
+				}
+				check(tyg_proc_end(p));
+			}
+		}
+	}
+	// the constant cases: each op and width on these pairs, where -1 is all ones, MIN the
+	// lowest signed value and MAX the highest
+	{
+		enum { NPAIRS = 7, NCASES = 6 * 4 * NPAIRS };
+		static long long cases[NCASES * 4];
+		int n = 0;
+		for (int w = 0; w < 4; w++) {
+			int bits = 8 << w;
+			long long max = (long long)((bits == 64 ? ~0ull : (1ull << bits) - 1) >> 1), min = -max - 1;
+			long long pairs[NPAIRS][2] = {{max, 1}, {min, -1}, {-1, -1}, {2, 3}, {min, 1}, {0, -1}, {max, 2}};
+			for (int op = 0; op < 6; op++) {
+				for (int k = 0; k < NPAIRS; k++, n++) {
+					cases[4*n] = op;
+					cases[4*n+1] = bits;
+					cases[4*n+2] = pairs[k][0];
+					cases[4*n+3] = pairs[k][1];
+				}
+			}
+		}
+		tyg_data(m, tyg_symbol(m, "tg_ovf_cases", TYG_SYM_GLOBAL), TYG_SECTION_RODATA, cases, sizeof(cases), 8);
+		const tyg_type *params[1] = {tyg_type_ptr(m)};
+		tyg_sig *sig = tyg_sig_new(m, i64t(), params, 1, 0);
+		tyg_proc *p = tyg_proc_begin(m, tyg_symbol(m, "tg_ovf_fold", TYG_SYM_FUNC | TYG_SYM_GLOBAL), sig);
+		tyg_val res = tyg_param(p, 0);
+		tyg_loc(p, file, 91, 1);
+		for (int i = 0; i < NCASES; i++) {
+			int op = (int)cases[4*i], w = cases[4*i+1] == 8 ? 0 : cases[4*i+1] == 16 ? 1 : cases[4*i+1] == 32 ? 2 : 3;
+			tyg_val ovf, r = tyg_bin_ovf(p, (tyg_ovfop)op, tyg_iconst(p, types[w], cases[4*i+2]), tyg_iconst(p, types[w], cases[4*i+3]), &ovf);
+			if (w < 3) r = tyg_convert(p, op % 2 == 0 ? TYG_SEXT : TYG_ZEXT, TYG_I64, r);
+			tyg_store(p, TYG_I64, tyg_at_val(res, 16*i), r, 0);
+			tyg_store(p, TYG_I64, tyg_at_val(res, 16*i + 8), tyg_convert(p, TYG_ZEXT, TYG_I64, ovf), 0);
+		}
+		tyg_ret(p, tyg_iconst(p, TYG_I64, NCASES));
+		check(tyg_proc_end(p));
+	}
+}
+
 // A module with data and no code still makes an object, with the target's debug info and
 // without. tg_no_data is zero bytes long, the only symbol in its section.
 static void check_data_only(tyg_target t) {
@@ -853,6 +927,7 @@ int main(int argc, char **argv) {
 	build_copy_fwd();
 	build_pair();
 	build_store_fwd();
+	build_ovf();
 	if (!windows && !is_elf) check_abs32();
 	check(tyg_module_write(m, out));
 	tyg_module_free(m);

@@ -14,7 +14,7 @@ static char const *const tg_op_names[tgOp_COUNT] = {
 	"jump", "branch", "ret", "unreachable", "trap", "debugtrap",
 	"fence", "atomic.load", "atomic.store", "atomic.rmw", "atomic.cas",
 	"rdcycle", "cpurelax", "prefetch", "stackptr", "frameaddr", "retaddr", "sqrt", "fma",
-	"bswap", "popcount", "ctz", "clz", "syscall", "mulovf", "mulhiu", "cpuid", "xgetbv",
+	"bswap", "popcount", "ctz", "clz", "syscall", "addovf", "subovf", "mulovf", "mulhiu", "cpuid", "xgetbv",
 	"vec128", "valgrind", "alloca", "tlsaddr", "ftohalf", "halftof",
 	"stackrestore", "x87", "param", "vastart", "vaarg", "vacopy",
 };
@@ -148,6 +148,11 @@ TG_INTERNAL void tg_dump_instr(tgProc *p, tgInstr const *in, FILE *f) {
 		break;
 	case tgOp_Select:
 		fprintf(f, " v%u ? v%u : v%u", in->a, in->b, in->c);
+		break;
+	case tgOp_AddOvf:
+	case tgOp_SubOvf:
+	case tgOp_MulOvf:
+		fprintf(f, "%s v%u, v%u -> overflow v%u", in->aux ? ".s" : ".u", in->a, in->b, in->c);
 		break;
 	case tgOp_MemCopy:
 	case tgOp_MemMove:

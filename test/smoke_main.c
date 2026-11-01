@@ -68,6 +68,106 @@ long long *__imp_tg_ext_value = &tg_ext_value;
 
 static int failures;
 
+// The overflow checks of build_ovf, against this reference.
+#define OVF_DECL(N, S, U) \
+	long long tg_ovf_sadd##N(S, S, S *); long long tg_ovf_ssub##N(S, S, S *); long long tg_ovf_smul##N(S, S, S *); \
+	long long tg_ovf_uadd##N(U, U, U *); long long tg_ovf_usub##N(U, U, U *); long long tg_ovf_umul##N(U, U, U *); \
+	long long tg_ovfb_sadd##N(S, S, S *); long long tg_ovfb_ssub##N(S, S, S *); long long tg_ovfb_smul##N(S, S, S *); \
+	long long tg_ovfb_uadd##N(U, U, U *); long long tg_ovfb_usub##N(U, U, U *); long long tg_ovfb_umul##N(U, U, U *);
+OVF_DECL(8, signed char, unsigned char)
+OVF_DECL(16, short, unsigned short)
+OVF_DECL(32, int, unsigned)
+OVF_DECL(64, long long, unsigned long long)
+long long tg_ovf_fold(long long *res);
+extern const long long tg_ovf_cases[];
+
+static unsigned long long ovf_mask(int bits) { return bits == 64 ? ~0ull : (1ull << bits) - 1; }
+static long long ovf_sext(unsigned long long v, int bits) {
+	unsigned long long sign = 1ull << (bits - 1);
+	v &= ovf_mask(bits);
+	return (v & sign) ? (long long)(v | ~ovf_mask(bits)) : (long long)v;
+}
+
+// op as tyg_ovfop: sadd, uadd, ssub, usub, smul, umul. *r is the wrapped result, masked.
+static int ref_ovf(int op, int bits, unsigned long long a, unsigned long long b, unsigned long long *r) {
+	unsigned long long mask = ovf_mask(bits);
+	int kind = op / 2;
+	a &= mask;
+	b &= mask;
+	*r = (kind == 0 ? a + b : kind == 1 ? a - b : a * b) & mask;
+	if (op % 2) {
+		if (kind == 0) return a > mask - b;
+		if (kind == 1) return a < b;
+		if (bits <= 32) return a * b > mask;
+		// the high half of the 128-bit product, from 32-bit halves
+		unsigned long long al = a & 0xffffffffu, ah = a >> 32, bl = b & 0xffffffffu, bh = b >> 32;
+		unsigned long long ll = al * bl, lh = al * bh, hl = ah * bl, hh = ah * bh;
+		unsigned long long mid = (ll >> 32) + (lh & 0xffffffffu) + (hl & 0xffffffffu);
+		return hh + (lh >> 32) + (hl >> 32) + (mid >> 32) != 0;
+	}
+	long long x = ovf_sext(a, bits), y = ovf_sext(b, bits);
+	long long max = (long long)(mask >> 1), min = -max - 1;
+	if (bits <= 32) {
+		long long e = kind == 0 ? x + y : kind == 1 ? x - y : x * y;
+		return e < min || e > max;
+	}
+	if (kind == 0) return (y > 0 && x > max - y) || (y < 0 && x < min - y);
+	if (kind == 1) return (y < 0 && x > max + y) || (y > 0 && x < min + y);
+	if (x > 0) return y > 0 ? x > max / y : y < min / x;
+	return y > 0 ? x < min / y : x != 0 && y < max / x;
+}
+
+static int ovf_values(int bits, unsigned long long *v) {
+	unsigned long long mask = ovf_mask(bits), max = mask >> 1, half = 1ull << (bits / 2);
+	unsigned long long all[] = {0, 1, 2, 3, mask, mask - 1, max, max - 1, max + 1, max + 2, half, half - 1, half + 1,
+	                            0x5a5a5a5a5a5a5a5aull, 1ull << (bits - 2), 0x8000000080000001ull};
+	int n = (int)(sizeof(all) / sizeof(all[0]));
+	for (int i = 0; i < n; i++) v[i] = all[i] & mask;
+	return n;
+}
+
+static void ovf_fail(const char *what, int op, int bits, unsigned long long a, unsigned long long b, long long got, unsigned long long r) {
+	printf("FAIL %s op %d bits %d: %llx, %llx gave %lld, %llx\n", what, op, bits, a, b, got, r);
+	failures++;
+}
+
+#define OVF_CHECK(N, S, U) do { \
+	long long (*const sf[2][3])(S, S, S *) = {{tg_ovf_sadd##N, tg_ovf_ssub##N, tg_ovf_smul##N}, {tg_ovfb_sadd##N, tg_ovfb_ssub##N, tg_ovfb_smul##N}}; \
+	long long (*const uf[2][3])(U, U, U *) = {{tg_ovf_uadd##N, tg_ovf_usub##N, tg_ovf_umul##N}, {tg_ovfb_uadd##N, tg_ovfb_usub##N, tg_ovfb_umul##N}}; \
+	unsigned long long vals[16]; \
+	int nv = ovf_values(N, vals); \
+	for (int i = 0; i < nv; i++) for (int j = 0; j < nv; j++) for (int k = 0; k < 3; k++) for (int form = 0; form < 2; form++) { \
+		unsigned long long want; \
+		int ovf = ref_ovf(2*k, N, vals[i], vals[j], &want); \
+		S sr = 0; \
+		long long got = sf[form][k]((S)vals[i], (S)vals[j], &sr); \
+		if (got != ovf || (!(form && ovf) && ((unsigned long long)sr & ovf_mask(N)) != want)) \
+			ovf_fail(form ? "branch" : "flag", 2*k, N, vals[i], vals[j], got, (unsigned long long)sr); \
+		ovf = ref_ovf(2*k + 1, N, vals[i], vals[j], &want); \
+		U ur = 0; \
+		got = uf[form][k]((U)vals[i], (U)vals[j], &ur); \
+		if (got != ovf || (!(form && ovf) && ((unsigned long long)ur & ovf_mask(N)) != want)) \
+			ovf_fail(form ? "branch" : "flag", 2*k + 1, N, vals[i], vals[j], got, (unsigned long long)ur); \
+	} \
+} while (0)
+
+static void check_ovf(void) {
+	long long res[2 * 6 * 4 * 7];
+	OVF_CHECK(8, signed char, unsigned char);
+	OVF_CHECK(16, short, unsigned short);
+	OVF_CHECK(32, int, unsigned);
+	OVF_CHECK(64, long long, unsigned long long);
+	long long n = tg_ovf_fold(res);
+	for (long long i = 0; i < n; i++) {
+		const long long *c = tg_ovf_cases + 4*i;
+		int op = (int)c[0], bits = (int)c[1];
+		unsigned long long want;
+		int ovf = ref_ovf(op, bits, (unsigned long long)c[2], (unsigned long long)c[3], &want);
+		long long wantv = op % 2 == 0 ? ovf_sext(want, bits) : (long long)want;
+		if (res[2*i] != wantv || res[2*i + 1] != ovf) ovf_fail("fold", op, bits, (unsigned long long)c[2], (unsigned long long)c[3], res[2*i + 1], (unsigned long long)res[2*i]);
+	}
+}
+
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
 static jmp_buf jump;
@@ -146,6 +246,7 @@ int main(void) {
 		CHECK(tg_store_fwd(sa, sa + 1) == 7 + 0x2222222211111111LL + 6000);
 		CHECK(tg_store_fwd(sa, sa) == 6 + 7 + 6000);
 	}
+	check_ovf();
 	printf(failures ? "%d FAILED\n" : "all passed\n", failures);
 	return failures != 0;
 }

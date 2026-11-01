@@ -759,6 +759,34 @@ tyg_val tyg_bin(tyg_proc *p, tyg_binop op, tyg_val a, tyg_val b) {
 	return tg_binop(p, iop, ta, a, b);
 }
 
+tyg_val tyg_bin_ovf(tyg_proc *p, tyg_ovfop op, tyg_val a, tyg_val b, tyg_val *overflow) {
+	tgType ta, tb;
+	u32 ovf = 0, r;
+	if (!tg_b_ok(p) || overflow == NULL) {
+		tgType t = p && a && (isize)a < p->vregs.count ? p->vregs.data[a] : tgType_I64;
+		if (p && overflow == NULL) tg_fail(p, "tyg_bin_ovf: no overflow result");
+		if (overflow) *overflow = tg_dummy(p, tgType_I8);
+		return tg_dummy(p, t);
+	}
+	*overflow = tg_dummy(p, tgType_I8);
+	ta = tg_val_check(p, a);
+	tb = tg_val_check(p, b);
+	if (ta == tgType_None || tb == tgType_None) return tg_dummy(p, ta);
+	if ((int)op < (int)TYG_SADD_OVF || (int)op > (int)TYG_UMUL_OVF) {
+		tg_fail(p, "tyg_bin_ovf: invalid operation");
+		return tg_dummy(p, ta);
+	}
+	if (ta != tb || !tg_type_is_int(ta)) {
+		tg_fail(p, "tyg_bin_ovf: operand types");
+		return tg_dummy(p, ta);
+	}
+	// tyg_ovfop pairs a signed and an unsigned op for add, sub and mul
+	r = tg_ovfop(p, op <= TYG_UADD_OVF ? tgOp_Add : op <= TYG_USUB_OVF ? tgOp_Sub : tgOp_Mul,
+	             (op - TYG_SADD_OVF) % 2 == 0, ta, a, b, &ovf);
+	*overflow = ovf;
+	return r;
+}
+
 tyg_val tyg_un(tyg_proc *p, tyg_unop op, tyg_val a) {
 	tgType t;
 	if (!tg_b_ok(p)) return tg_dummy(p, tgType_I64);
