@@ -186,6 +186,9 @@ static char const tg_c_prelude[] =
 	"#define TYG_ASM_NAME(name) __asm__(name)\n"
 	"#endif\n"
 	"#endif\n"
+	// a function's address as an integer the compiler does not see through: gcc warns about a
+	// call through a cast of the function's own address to another function type
+	"static TYG_UNUSED uintptr_t tyg_fn_addr(uintptr_t a) { return a; }\n"
 	"#if defined(TYG_TARGET_WINDOWS)\n"
 	"typedef double TYG_F80;\n"
 	"#else\n"
@@ -583,11 +586,13 @@ TG_INTERNAL void tg_c_type_decl(tgModule *m, tgBytes *b, tyg_type const *t, char
 	}
 }
 
-// A member of a struct. An array member keeps its dimensions, as C lays them out.
-TG_INTERNAL void tg_c_member(tgModule *m, tgBytes *b, tyg_type const *t, char const *name) {
+// A member of a struct, aligned to `align` unless 0. An array member keeps its dimensions, as C
+// lays them out.
+TG_INTERNAL void tg_c_member(tgModule *m, tgBytes *b, tyg_type const *t, char const *name, i64 align) {
 	tyg_type const *elem = t;
 	while (elem->kind == tgT_Array) elem = elem->elem;
 	tg_c_puts(b, "\t");
+	if (align > 0) tg_c_printf(b, "TYG_ALIGNED(%lld) ", (long long)align);
 	tg_c_type_decl(m, b, elem, name);
 	for (; t->kind == tgT_Array; t = t->elem) tg_c_printf(b, "[%lld]", (long long)t->count);
 	tg_c_puts(b, ";\n");
@@ -619,7 +624,7 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 	memset(&b, 0, sizeof(b));
 	if (t->kind == tgT_Array) {
 		tg_c_printf(&b, "struct tyg_r%d {\n", n);
-		tg_c_member(m, &b, t, "a");
+		tg_c_member(m, &b, t, "a", 0);
 		tg_c_puts(&b, "};\n");
 	} else {
 		i32 *order = tg_c_fields_by_offset(t);
@@ -659,7 +664,10 @@ TG_INTERNAL i32 tg_c_record(tgModule *m, tyg_type const *t) {
 				if (!natural && f->offset > at) tg_c_printf(&b, "\tunsigned char tyg_pad%d[%lld];\n", pads++, (long long)(f->offset - at));
 				char name[32];
 				snprintf(name, sizeof(name), "f%d", order[k]);
-				tg_c_member(m, &b, f->type, t->c_fields && t->c_fields[order[k]] ? t->c_fields[order[k]] : name);
+				// a natural record aligned above its fields: its first field too, as arm64 gcc
+				// passes a struct by its fields' alignment, not the struct's
+				i64 falign = natural && t->align > max_align && f->offset == 0 ? t->align : 0;
+				tg_c_member(m, &b, f->type, t->c_fields && t->c_fields[order[k]] ? t->c_fields[order[k]] : name, falign);
 				at = f->offset + f->type->size;
 			}
 			if (!natural && t->size > at) tg_c_printf(&b, "\tunsigned char tyg_pad%d[%lld];\n", pads++, (long long)(t->size - at));
@@ -1345,7 +1353,7 @@ TG_INTERNAL void tg_c_pointers(tgProc *p) {
 		for (bool grew = true; grew;) {
 			grew = false;
 			for (isize i = 0; i < n; i++) {
-				if (all[i]->dst != 0 && !intish[all[i]->dst] && tg_c_intish(all[i], intish, local_int)) grew = intish[all[i]->dst] = 1;
+				if (all[i]->dst != 0 && !intish[all[i]->dst] && tg_c_intish(all[i], intish, local_int)) grew = (intish[all[i]->dst] = 1);
 			}
 		}
 		for (isize i = 0; i < n; i++) {
@@ -1624,7 +1632,7 @@ TG_INTERNAL void tg_c_call_expr(tgProc *p, tgBytes *b, tgCall const *call) {
 		tg_c_params(m, &d, sig, NULL);
 		tg_c_puts(b, "((");
 		tg_c_type_decl(m, b, rt, (char const *)d.data);
-		if (call->target_sym >= 0) tg_c_printf(b, ")(uintptr_t)&%s)", tg_c_sym_name(m, call->target_sym).text);
+		if (call->target_sym >= 0) tg_c_printf(b, ")tyg_fn_addr((uintptr_t)&%s))", tg_c_sym_name(m, call->target_sym).text);
 		else tg_c_printf(b, ")(uintptr_t)v%u)", call->target_vreg);
 		tg_array_free(&d);
 	}

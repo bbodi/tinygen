@@ -91,9 +91,6 @@ static int failures;
 // MinGW's gcc has the x87 type, tinygen MSVC's
 #error "long double is a double on Windows, as with MSVC: build with gcc -mlong-double-64"
 #endif
-#if !(defined(__aarch64__) && !defined(__APPLE__))
-#define HAVE_LD 1
-#include <limits.h>
 
 struct LDS { long double x; };
 struct LDI { int i; long double x; };
@@ -148,6 +145,12 @@ long double c_ld_vsum(int n, ...) {
 	va_end(ap);
 	return s;
 }
+
+// the C output builds the procedures above that call these on arm64 Linux too; only the
+// checks below wait for tinygen's long double there
+#if !(defined(__aarch64__) && !defined(__APPLE__))
+#define HAVE_LD 1
+#include <limits.h>
 
 static long double expect_ld_call_c(long double x) {
 	long double r = c_ld_mix(3, x, 2.5, x, 7);
