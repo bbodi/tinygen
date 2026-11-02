@@ -522,7 +522,7 @@ static void build_calls(void) {
 	tyg_ret(p, tyg_bin(p, TYG_ADD, tyg_call(p, s_ii, tyg_indirect(f), &a, 1, NULL, NULL), k32(p, 3)));
 	check(tyg_proc_end(p));
 
-	tyg_sym ext = tyg_symbol(m, "cc_ext", TYG_SYM_FUNC);
+	tyg_sym ext = tyg_symbol(m, "cc_ext", TYG_SYM_FUNC | TYG_SYM_GLOBAL);
 	p = begin("cc_two_sigs", TYG_SYM_GLOBAL, sig(i64, i64, NULL, NULL, 0));
 	tyg_arg as[3] = {V(tyg_param(p, 0)), V(k64(p, 5)), V(0)};
 	tyg_val r1 = tyg_call(p, sig(i64, i64, i64, NULL, 0), tyg_direct(ext), as, 2, NULL, NULL);
@@ -533,7 +533,7 @@ static void build_calls(void) {
 	as[0] = V(tyg_addr_of(p, tyg_at_local(l2, 0)));
 	as[1] = V(tyg_addr_of(p, tyg_at_local(l1, 0)));
 	as[2] = V(k64(p, 8));
-	tyg_call(p, sig(ptr, ptr, ptr, i64, 0), tyg_direct(tyg_symbol(m, "memcpy", TYG_SYM_FUNC)), as, 3, NULL, NULL);
+	tyg_call(p, sig(ptr, ptr, ptr, i64, 0), tyg_direct(tyg_symbol(m, "memcpy", TYG_SYM_FUNC | TYG_SYM_GLOBAL | TYG_SYM_FOREIGN)), as, 3, NULL, NULL);
 	tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_local(l2, 0), 0));
 	check(tyg_proc_end(p));
 }
@@ -558,7 +558,7 @@ static void build_varargs(void) {
 	                 V(tyg_addr_of(p, tyg_at_sym(fmt, 0))), V(tyg_param(p, 1)), V(tyg_iconst(p, TYG_I8, -5)),
 	                 V(tyg_fconst(p, TYG_F32, 2.5)), V(tyg_bin(p, TYG_MUL, tyg_param(p, 1), k32(p, 2))),
 	                 V(tyg_addr_of(p, tyg_at_sym(okstr, 0)))};
-	tyg_sym snp = tyg_symbol(m, "snprintf", TYG_SYM_FUNC);
+	tyg_sym snp = tyg_symbol(m, "snprintf", TYG_SYM_FUNC | TYG_SYM_GLOBAL | TYG_SYM_FOREIGN);
 	tyg_ret(p, tyg_call(p, sig(i32, ptr, i64, ptr, TYG_SIG_VARIADIC), tyg_direct(snp), fa, 8, fvt, NULL));
 	check(tyg_proc_end(p));
 
@@ -654,7 +654,7 @@ static void build_structs(void) {
 	tyg_call(p, s_mkbig, tyg_direct(mkbig), a, 1, NULL, &ab);
 	tyg_call(p, s_mkbig, tyg_direct(mkbig), a, 1, NULL, NULL);
 	tyg_call(p, s_mkmix, tyg_direct(mkmix), a, 2, NULL, &am);
-	tyg_call(p, sig(ty(TYG_VOID), i64, NULL, NULL, 0), tyg_direct(tyg_symbol(m, "cc_note", TYG_SYM_FUNC)), a, 1, NULL, NULL);
+	tyg_call(p, sig(ty(TYG_VOID), i64, NULL, NULL, 0), tyg_direct(tyg_symbol(m, "cc_note", TYG_SYM_FUNC | TYG_SYM_GLOBAL)), a, 1, NULL, NULL);
 	tyg_arg sa[2] = {M(ab), M(am)};
 	tyg_ret(p, tyg_call(p, s_sumbig, tyg_direct(sumbig), sa, 2, NULL, NULL));
 	check(tyg_proc_end(p));
@@ -670,13 +670,13 @@ static void build_setjmp(void) {
 	tyg_val k = tyg_bin(p, TYG_MUL, tyg_param(p, 0), k64(p, 3));
 	tyg_store(p, TYG_I64, tyg_at_local(cnt, 0), tyg_param(p, 0), 0);
 	tyg_arg a[2] = {V(tyg_addr_of(p, tyg_at_sym(jb, 0))), V(k32(p, 7))};
-	tyg_sym sj = tyg_symbol(m, "setjmp", TYG_SYM_FUNC);
+	tyg_sym sj = tyg_symbol(m, "setjmp", TYG_SYM_FUNC | TYG_SYM_GLOBAL | TYG_SYM_FOREIGN);
 	tyg_val r = tyg_call(p, sig(i32, ptr, NULL, NULL, TYG_SIG_RETURNS_TWICE), tyg_direct(sj), a, 1, NULL, NULL);
 	tyg_block first = tyg_block_new(p), back = tyg_block_new(p);
 	tyg_branch(p, tyg_cmp(p, TYG_EQ, r, k32(p, 0)), first, back);
 	tyg_block_set(p, first);
 	tyg_store(p, TYG_I64, tyg_at_local(cnt, 0), tyg_bin(p, TYG_ADD, tyg_load(p, TYG_I64, tyg_at_local(cnt, 0), 0), k64(p, 1)), 0);
-	tyg_sym jump = tyg_symbol(m, "cc_jump", TYG_SYM_FUNC);
+	tyg_sym jump = tyg_symbol(m, "cc_jump", TYG_SYM_FUNC | TYG_SYM_GLOBAL);
 	tyg_call(p, sig(ty(TYG_VOID), ptr, i32, NULL, TYG_SIG_NORETURN), tyg_direct(jump), a, 2, NULL, NULL);
 	tyg_block_set(p, back);
 	tyg_val s = tyg_bin(p, TYG_ADD, k, tyg_convert(p, TYG_SEXT, TYG_I64, r));
