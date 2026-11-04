@@ -11,7 +11,12 @@
 // Step 1: data
 extern const char cd_greeting[];
 extern unsigned char cd_blob[24], cd_zeros[64];
-extern __thread unsigned char cd_tls[32];
+#ifdef _MSC_VER
+#define TLS __declspec(thread)
+#else
+#define TLS __thread
+#endif
+extern TLS unsigned char cd_tls[32];
 extern int64_t cd_weak;
 extern void *const cd_ptrs[4];
 unsigned char cd_ext[4];
@@ -80,6 +85,11 @@ int32_t tg_aload_32(int32_t *); int64_t tg_aload_64(int64_t *); double tg_aload_
 void tg_astore_32(int32_t *, int32_t); void tg_astore_64(int64_t *, int64_t); void tg_astore_f64(double *, double);
 void tg_fence_pair(int64_t *, int64_t, int64_t); float tg_sqrt_f32(float); double tg_sqrt_f64(double);
 void *tg_frame_addr(void); void *tg_ret_addr(void); int64_t tg_alloca_loop(int64_t, int32_t, void **);
+#include <float.h>
+#if defined(_WIN32) && LDBL_MANT_DIG != 53
+// MinGW's gcc has the x87 type, tinygen MSVC's
+#error "long double is a double on Windows, as with MSVC: build with gcc -mlong-double-64"
+#endif
 #if !(defined(__aarch64__) && defined(__linux__)) // no native long double on arm64 Linux yet
 #define HAVE_LD 1
 long double tg_ld_add(long double, long double); long double tg_ld_sub(long double, long double);

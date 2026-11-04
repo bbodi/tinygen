@@ -266,6 +266,7 @@ the tests the host can run. It lists the targets it skips:
 
     test/run.sh
 
+On Windows, `test\run.bat` does the same with MSVC, from a VS prompt or not.
 The generators are built with `TG_CHECK_IR`, which checks the IR after each
 pass in `tyg_proc_end`. `--docker` also runs the Linux targets in Docker. The objects are deterministic,
 so `--save DIR` before a change and `--compare DIR` after it check that the

@@ -9,6 +9,13 @@ Run every command from the repository root, in an **x64 Native Tools Command
 Prompt for VS** (so `cl`, `link` and `dumpbin` are on the path and target x64).
 Use either MSVC (`cl` + `link`) or LLVM (`clang-cl` + `lld-link`).
 
+`test\run.bat` runs the whole suite with MSVC in one go: it builds the
+generators, emits the objects and the C, and links and runs the smoke, ABI and
+cgen tests against both. It calls `vcvars64.bat` itself when `cl` is not on
+the path. The steps below do the same by hand, and add the debugger checks.
+`test/run.sh` also runs from Git Bash with MinGW-w64 on the path; it checks the
+C output only, with `-mlong-double-64` for the test mains (see the ABI test).
+
 ## 1. Build the generator and emit the object
 
 MSVC:

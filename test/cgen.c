@@ -14,6 +14,7 @@
 
 static tyg_module *m;
 static tyg_file file;
+static tyg_target module_target;
 
 static void check_at(int failed, int line) {
 	if (failed) {
@@ -661,7 +662,10 @@ static void build_structs(void) {
 }
 
 // long long cc_sj(long long x): a local and a value live across setjmp(cc_jmpbuf); the first
-// time it counts the local up and calls cc_jump(cc_jmpbuf, 7), which longjmps back
+// time it counts the local up and calls cc_jump(cc_jmpbuf, 7), which longjmps back. The C
+// output calls the header's setjmp macro, which each C compiler expands to its own CRT call.
+// An object calls the CRT's function: Windows' _setjmp also takes the frame to unwind to,
+// and a null frame makes its longjmp restore the registers without unwinding.
 static void build_setjmp(void) {
 	const tyg_type *i32 = ty(TYG_I32), *i64 = ty(TYG_I64), *ptr = tyg_type_ptr(m);
 	tyg_sym jb = data("cc_jmpbuf", 0, TYG_SECTION_BSS, NULL, 512, 16);
@@ -670,8 +674,11 @@ static void build_setjmp(void) {
 	tyg_val k = tyg_bin(p, TYG_MUL, tyg_param(p, 0), k64(p, 3));
 	tyg_store(p, TYG_I64, tyg_at_local(cnt, 0), tyg_param(p, 0), 0);
 	tyg_arg a[2] = {V(tyg_addr_of(p, tyg_at_sym(jb, 0))), V(k32(p, 7))};
-	tyg_sym sj = tyg_symbol(m, "setjmp", TYG_SYM_FUNC | TYG_SYM_GLOBAL | TYG_SYM_FOREIGN);
-	tyg_val r = tyg_call(p, sig(i32, ptr, NULL, NULL, TYG_SIG_RETURNS_TWICE), tyg_direct(sj), a, 1, NULL, NULL);
+	int c = module_target.output == TYG_OUTPUT_C, win = !c && module_target.os == TYG_OS_WINDOWS;
+	if (c) tyg_c_header(m, "#include <setjmp.h>");
+	tyg_sym sj = tyg_symbol(m, win ? "_setjmp" : "setjmp", TYG_SYM_FUNC | TYG_SYM_GLOBAL | (c ? TYG_SYM_DECLARED : TYG_SYM_FOREIGN));
+	tyg_arg sa[2] = {a[0], V(k64(p, 0))};
+	tyg_val r = tyg_call(p, sig(i32, ptr, win ? ptr : NULL, NULL, TYG_SIG_RETURNS_TWICE), tyg_direct(sj), sa, 1 + win, NULL, NULL);
 	tyg_block first = tyg_block_new(p), back = tyg_block_new(p);
 	tyg_branch(p, tyg_cmp(p, TYG_EQ, r, k32(p, 0)), first, back);
 	tyg_block_set(p, first);
@@ -1260,6 +1267,7 @@ int main(int argc, char **argv) {
 		t.pic = t.debug_info = 1;
 		t.output = c_for ? TYG_OUTPUT_C : TYG_OUTPUT_OBJECT;
 	}
+	module_target = t;
 	m = tyg_module_new(t, "cgen.tg");
 	if (!m) { fprintf(stderr, "no module\n"); return 1; }
 	file = tyg_debug_file(m, "cgen.tg");

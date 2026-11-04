@@ -27,7 +27,12 @@ done
 
 out=${TG_TEST_OUT:-build/test}
 mkdir -p "$out/obj"
-cc=${CC:-cc}
+# Git Bash or MSYS2 with MinGW-w64: there is no cc, and gcc's long double is the x87 type where
+# tinygen's on Windows is MSVC's double, so the test mains are built with -mlong-double-64
+case "$(uname -s)" in
+MINGW*|MSYS*) cc=${CC:-gcc}; mainflags="-mlong-double-64" ;;
+*) cc=${CC:-cc}; mainflags="" ;;
+esac
 failed=0
 ran=""
 skipped=""
@@ -112,7 +117,7 @@ run_native() {
 		for o in -O0 -O2; do
 			bin="$out/$test-$t$o"
 			# shellcheck disable=SC2086
-			if ! $cc $o $flags "test/${test}_main.c" "$out/obj/$test-$t.o" -o "$bin" -lpthread -lm > "$bin.log" 2>&1; then
+			if ! $cc $o $flags $mainflags "test/${test}_main.c" "$out/obj/$test-$t.o" -o "$bin" -lpthread -lm > "$bin.log" 2>&1; then
 				cat "$bin.log"
 				fail "link $test $t $o"
 				continue
@@ -143,7 +148,7 @@ esac
 run_cgen() {
 	bin="$out/cgen-$1"
 	# shellcheck disable=SC2086
-	if ! $cc -std=c99 -Wall -Wextra $2 "$3" test/cgen_main.c -o "$bin" -lm > "$bin.log" 2>&1 ||
+	if ! $cc -std=c99 -Wall -Wextra $2 $mainflags "$3" test/cgen_main.c -o "$bin" -lm > "$bin.log" 2>&1 ||
 		{ case "$3" in *.c) [ -s "$bin.log" ] ;; *) false ;; esac; }; then
 		cat "$bin.log"
 		fail "compile cgen $1"
@@ -262,7 +267,7 @@ run_c_suite() {
 		fi
 		if [ -z "$2" ]; then echo "$1 c$o: compiled"; continue; fi
 		# shellcheck disable=SC2086
-		if ! $cc $o $3 "$2" "$bin.o" -o "$bin" -lpthread -lm > "$bin.log" 2>&1; then
+		if ! $cc $o $3 $mainflags "$2" "$bin.o" -o "$bin" -lpthread -lm > "$bin.log" 2>&1; then
 			cat "$bin.log"
 			fail "link $1 c$o"
 			continue
