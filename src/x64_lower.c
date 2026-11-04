@@ -417,13 +417,14 @@ TG_INTERNAL tgOpnd tg_mem_opnd(tgLower *L, tgMem m, u8 scratch) {
 		}
 		return tg_m(x64_src(L, m.base, scratch, 8, tgExt_None), (i32)m.offset);
 	case tgMem_Sym: {
-		u8 flags = tg_lower_sym_flags(L->p->m, m.base);
+		u16 flags = tg_lower_sym_flags(L->p->m, m.base);
 		if ((flags & tgSymbolFlag_TLS) && tg_is_win64()) {
 			return tg_win64_tls_opnd(L, m, scratch);
 		}
-		if ((flags & tgSymbolFlag_Foreign) && (flags & tgSymbolFlag_Undef) && tg_is_win64()) {
-			if (flags & tgSymbolFlag_Func) return tg_m_sym((i32)m.base, (i32)m.offset, tgReloc_PC32);
-			return tg_win64_import_opnd(L, m, scratch);
+		if ((flags & tgSymbolFlag_Undef) && tg_is_win64()) {
+			// Windows has no GOT: only a DLL's data goes through the import table, the rest is direct
+			if ((flags & tgSymbolFlag_DllImport) && !(flags & tgSymbolFlag_Func)) return tg_win64_import_opnd(L, m, scratch);
+			return tg_m_sym((i32)m.base, (i32)m.offset, tgReloc_PC32);
 		}
 		if (flags & tgSymbolFlag_TLS) {
 			TG_ASSERT_MSG(!tg_is_darwin(), "a thread local symbol is reached through tgOp_TlsAddr");

@@ -464,15 +464,22 @@ static void build_tls_alias(void) {
 	check(tyg_proc_end(p));
 }
 
-// extern long long tg_ext_value; -- defined by smoke_main.c, reached as foreign data (__imp_ on Windows)
+// extern long long tg_ext_value; -- defined by smoke_main.c, read as a DLL's data (__imp_ on Windows)
 // long long tg_read_ext(void) { return tg_ext_value; }
+// extern long long tg_ext_plain; -- defined by smoke_main.c, foreign data: direct on Windows
+// long long tg_read_ext_plain(void) { return tg_ext_plain; }
 // int tg_weak_answer(void) { return 7; } -- a weak definition
 // void *tg_weak_ptr = &tg_weak_target; -- a weak reference, defined by smoke_main.c
 static void build_ext_weak(void) {
-	tyg_sym ext = tyg_symbol(m, "tg_ext_value", TYG_SYM_GLOBAL | TYG_SYM_FOREIGN);
+	tyg_sym ext = tyg_symbol(m, "tg_ext_value", TYG_SYM_GLOBAL | TYG_SYM_FOREIGN | TYG_SYM_DLLIMPORT);
 	tyg_sig *sig = tyg_sig_new(m, i64t(), NULL, 0, 0);
 	tyg_proc *p = tyg_proc_begin(m, tyg_symbol(m, "tg_read_ext", TYG_SYM_FUNC | TYG_SYM_GLOBAL), sig);
 	tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_sym(ext, 0), 0));
+	check(tyg_proc_end(p));
+
+	tyg_sym plain = tyg_symbol(m, "tg_ext_plain", TYG_SYM_GLOBAL | TYG_SYM_FOREIGN);
+	p = tyg_proc_begin(m, tyg_symbol(m, "tg_read_ext_plain", TYG_SYM_FUNC | TYG_SYM_GLOBAL), sig);
+	tyg_ret(p, tyg_load(p, TYG_I64, tyg_at_sym(plain, 0), 0));
 	check(tyg_proc_end(p));
 
 	tyg_sig *wsig = tyg_sig_new(m, i32t(), NULL, 0, 0);

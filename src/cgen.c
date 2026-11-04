@@ -75,9 +75,11 @@ static char const tg_c_prelude[] =
 	"#define TYG_HIDDEN\n"
 	"#define TYG_PROTECTED\n"
 	"#define TYG_EXPORT __declspec(dllexport)\n"
+	"#define TYG_DLLIMPORT __declspec(dllimport)\n"
 	"#else\n"
 	"#define TYG_HIDDEN __attribute__((visibility(\"hidden\")))\n"
 	"#define TYG_EXPORT __attribute__((visibility(\"default\")))\n"
+	"#define TYG_DLLIMPORT\n"
 	"#if defined(__APPLE__)\n"
 	"#define TYG_PROTECTED\n"
 	"#else\n"
@@ -110,6 +112,7 @@ static char const tg_c_prelude[] =
 	"#define TYG_HIDDEN\n"
 	"#define TYG_PROTECTED\n"
 	"#define TYG_EXPORT __declspec(dllexport)\n"
+	"#define TYG_DLLIMPORT __declspec(dllimport)\n"
 	"#define TYG_ALIAS(target)\n"
 	"#else\n"
 	"#define TYG_ALIGNED(n)\n"
@@ -130,6 +133,7 @@ static char const tg_c_prelude[] =
 	"#define TYG_HIDDEN\n"
 	"#define TYG_PROTECTED\n"
 	"#define TYG_EXPORT\n"
+	"#define TYG_DLLIMPORT\n"
 	"#define TYG_ALIAS(target)\n"
 	"#endif\n"
 	// the builtin, not the memcpy _FORTIFY_SOURCE makes a __memcpy_chk call, which clang turns
@@ -1044,6 +1048,8 @@ TG_INTERNAL void tg_c_attrs(tgModule *m, tgBytes *b, i32 sym, char const *storag
 	if (hidden) tg_c_puts(b, "TYG_HIDDEN ");
 	else if (elf && (s->flags & tgSymbolFlag_Protected)) tg_c_puts(b, "TYG_PROTECTED ");
 	else if (exported) tg_c_puts(b, "TYG_EXPORT ");
+	// the object writers' rule: only a DLL's undefined data is imported, never a function
+	if ((s->flags & tgSymbolFlag_DllImport) && !(s->flags & tgSymbolFlag_Func) && s->section == tgSection_Undef && m->target.os == TYG_OS_WINDOWS) tg_c_puts(b, "TYG_DLLIMPORT ");
 	if (s->alias_of == 0 && s->section >= tgSection_COUNT) {
 		tg_c_puts(b, "TYG_SECTION(");
 		tg_c_string(b, tg_named_section(m, s->section)->name);

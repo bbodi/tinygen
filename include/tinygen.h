@@ -112,7 +112,8 @@ enum {
 	TYG_SYM_GLOBAL  = 1 << 1, /* visible to other objects */
 	TYG_SYM_WEAK    = 1 << 2,
 	TYG_SYM_HIDDEN  = 1 << 3, /* global within the linked image only */
-	TYG_SYM_FOREIGN = 1 << 4, /* may be defined in a shared library */
+	TYG_SYM_FOREIGN = 1 << 4, /* may be defined in a shared library: data through the GOT; on
+	                           * Windows no effect, see TYG_SYM_DLLIMPORT */
 	TYG_SYM_TLS     = 1 << 5,
 	TYG_SYM_EXPORT  = 1 << 6, /* exported from a shared library or DLL */
 	/* ELF: visible to other objects, but references from within the linked image bind to
@@ -129,6 +130,11 @@ enum {
 	 * header's declaration and the tyg_sig agree is up to the host. Object output ignores
 	 * the flag. */
 	TYG_SYM_DECLARED = 1 << 8,
+	/* Windows: __declspec(dllimport), data that a DLL defines. It is read through the import
+	 * table (__imp_<name>), which only a DLL's data needs: a symbol of the executable itself,
+	 * from another object, is reached directly, and the linker warns (LNK4217) when such a
+	 * symbol is imported. The other platforms ignore it. */
+	TYG_SYM_DLLIMPORT = 1 << 9,
 };
 
 typedef enum tyg_section {

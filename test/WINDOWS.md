@@ -70,10 +70,12 @@ and exit code 0 (`echo %ERRORLEVEL%`). A failing check prints `FAIL smoke_main.c
 Expected linker messages:
 
 - **LNK4217** (`locally defined symbol tg_ext_value imported`): on purpose.
-  `tg_read_ext` reads `tg_ext_value` as foreign data, through
-  `__imp_tg_ext_value`, as it would from a DLL; the linker makes that pointer
-  itself since `smoke_main.c` defines the variable. GNU ld does not, so under
-  MinGW `smoke_main.c` defines `__imp_tg_ext_value` itself, and there is no warning.
+  `tg_read_ext` reads `tg_ext_value` as a DLL's data (`TYG_SYM_DLLIMPORT`),
+  through `__imp_tg_ext_value`; the linker makes that pointer itself since
+  `smoke_main.c` defines the variable. GNU ld does not, so under MinGW
+  `smoke_main.c` defines `__imp_tg_ext_value` itself, and there is no warning.
+  `tg_ext_plain` is foreign data without the flag, and is read directly: no
+  warning for it.
 - `build\smoke_run.lib` and `.exp` appear: `tg_add` and the data `tg_origin` are
   exported (`-export:` in the object's `.drectve`), which turns the import
   library on. `dumpbin /exports build\smoke_run.exe` lists both.
@@ -87,7 +89,7 @@ others by pointer to a copy, sret, floats in xmm), C varargs both ways (floats
 also in the integer registers, `va_list` as a pointer into the home slots,
 aggregate varargs), callee saved xmm6+, the stack probes of a frame over a page
 and of an `alloca` of 256 KB (without them the program dies with an access violation),
-thread locals through `_tls_index` and `gs:[0x58]`, `__imp_` data, a weak
+thread locals through `_tls_index` and `gs:[0x58]`, `__imp_` data of a DLL, a weak
 definition, and `longjmp` out of a callback through a tinygen frame, which
 unwinds that frame with its `.pdata`/`.xdata` (with broken unwind info the
 program crashes there).
@@ -109,8 +111,7 @@ with clang-cl as in step 1, linking with `-fuse-ld=lld`; or with MinGW:
 
     gcc -std=c11 -mlong-double-64 -g test\abi_main.c build\abi.obj -o build\abi_run.exe
 
-It prints `all passed`. `link` and lld give LNK4217 for `c_small_ptr`, which
-tinygen reads as foreign data, like `tg_ext_value` above. GCC's MinGW port
+It prints `all passed`. GCC's MinGW port
 has only emulated thread locals, which cannot reach tinygen's native ones, so
 built by gcc the test checks those through tinygen's functions only.
 

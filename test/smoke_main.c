@@ -38,6 +38,7 @@ long long tg_bigframe(long long n);
 long long tg_bigalloca(long long n);
 int tg_tls_bump(void);
 long long tg_read_ext(void);
+long long tg_read_ext_plain(void);
 int tg_weak_answer(void);
 extern void *tg_weak_ptr;
 long long tg_node_sum(struct Node *n, Point p);
@@ -59,10 +60,11 @@ int tg_tls_alias_bump(void);
 #endif
 
 long long tg_ext_value = 1234;
+long long tg_ext_plain = 4321;
 int tg_weak_target = 99;
 #if defined(__MINGW32__)
-// tg_read_ext reads it through __imp_tg_ext_value: link and lld make that pointer for a local
-// definition (LNK4217), GNU ld does not
+// tg_read_ext reads it as a DLL's data, through __imp_tg_ext_value: link and lld make that
+// pointer for a local definition (LNK4217), GNU ld does not
 long long *__imp_tg_ext_value = &tg_ext_value;
 #endif
 
@@ -215,6 +217,7 @@ int main(void) {
 	CHECK(tg_tls_bump() == 43);
 	CHECK(tg_tls_bump() == 45);
 	CHECK(tg_read_ext() == 1234);
+	CHECK(tg_read_ext_plain() == 4321);
 	CHECK(tg_weak_answer() == 7);
 	CHECK(tg_weak_ptr == &tg_weak_target);
 	CHECK(tg_origin.x == 10 && tg_origin.y == 20);

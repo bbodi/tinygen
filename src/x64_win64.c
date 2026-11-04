@@ -414,7 +414,7 @@ TG_INTERNAL tgOpnd tg_win64_tls_opnd(tgLower *L, tgMem m, u8 scratch) {
 	return tg_m(scratch, m.offset);
 }
 
-// Foreign data lives in a DLL: its address is in the import table, at __imp_<name>.
+// A DLL's data (tgSymbolFlag_DllImport): its address is in the import table, at __imp_<name>.
 TG_INTERNAL tgOpnd tg_win64_import_opnd(tgLower *L, tgMem m, u8 scratch) {
 	// the module's symbols must not change while lowering, so the append names it
 	i32 imp = tg_lower_import_symbol(L->out, (i32)m.base);

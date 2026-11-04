@@ -164,6 +164,7 @@ TG_INTERNAL u16 tg_sym_flags_from_public(unsigned flags) {
 	if (flags & TYG_SYM_EXPORT)  f |= tgSymbolFlag_Export;
 	if (flags & TYG_SYM_PROTECTED) f |= tgSymbolFlag_Protected;
 	if (flags & TYG_SYM_DECLARED) f |= tgSymbolFlag_Declared;
+	if (flags & TYG_SYM_DLLIMPORT) f |= tgSymbolFlag_DllImport;
 	return f;
 }
 

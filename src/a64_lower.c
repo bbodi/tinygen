@@ -482,7 +482,7 @@ TG_INTERNAL a64Addr a64_mem(a64Lower *L, tgMem m, u8 scratch) {
 		return r;
 	case tgMem_Sym: {
 		i32 sym = (i32)m.base;
-		u8 flags = tg_lower_sym_flags(L->p->m, sym);
+		u16 flags = tg_lower_sym_flags(L->p->m, sym);
 		TG_ASSERT_MSG((flags & tgSymbolFlag_TLS) == 0, "a64: a thread local symbol is reached through tgOp_TlsAddr");
 		// like x64_lower.c: an exported symbol of a shared library may be preempted, its address is in the GOT
 		bool preemptible = (flags & tgSymbolFlag_Export) && tg_is_pic();

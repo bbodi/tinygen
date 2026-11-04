@@ -256,11 +256,6 @@ signed char c_schar(void) { return -5; }
 unsigned short c_ushort(void) { return 65000; }
 int c_small(signed char a, unsigned short b, short c) { return a + b + c; }
 int (*c_small_ptr)(signed char, unsigned short, short) = c_small;
-#if defined(__MINGW32__)
-// tinygen reads the foreign c_small_ptr through __imp_c_small_ptr: link and lld make that pointer
-// for a local definition (LNK4217), GNU ld does not
-int (**__imp_c_small_ptr)(signed char, unsigned short, short) = &c_small_ptr;
-#endif
 
 static double expect_call_c(void) {
 	struct F3 h = {1.25f, 2.5f, 3.75f};

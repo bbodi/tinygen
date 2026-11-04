@@ -789,6 +789,7 @@ enum {
 	tgSymbolFlag_Undef   = 1<<7, // only from tg_lower_sym_flags: the symbol has no section yet
 	tgSymbolFlag_Protected = 1<<8, // ELF STV_PROTECTED; not in tg_lower_sym_flags
 	tgSymbolFlag_Declared  = 1<<9, // C output: the header text declares it; not in tg_lower_sym_flags
+	tgSymbolFlag_DllImport = 1<<10, // Windows: a DLL's data, read through __imp_<name>
 };
 
 typedef struct tgSymbol {
@@ -1021,10 +1022,10 @@ struct tyg_module {
 
 // A symbol's flags for lowering, with tgSymbolFlag_Undef while it has no section. Lowering
 // adds no symbols and changes none, so it sees them as they were when it started.
-TG_INTERNAL u8 tg_lower_sym_flags(tgModule *m, i64 sym) {
+TG_INTERNAL u16 tg_lower_sym_flags(tgModule *m, i64 sym) {
 	TG_ASSERT(0 <= sym && sym < m->symbols.count);
 	tgSymbol const *s = &m->symbols.data[sym];
-	return (u8)(s->flags | (s->section == tgSection_Undef ? tgSymbolFlag_Undef : 0));
+	return (u16)(s->flags | (s->section == tgSection_Undef ? tgSymbolFlag_Undef : 0));
 }
 
 #endif
