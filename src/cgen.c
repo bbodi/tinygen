@@ -51,6 +51,7 @@ static char const tg_c_prelude[] =
 	"#define TYG_ALIGNED(n) __attribute__((aligned(n)))\n"
 	"#define TYG_THREAD __thread\n"
 	"#define TYG_WEAK __attribute__((weak))\n"
+	"#define TYG_NOFOLD(T, x) ((T)(x))\n"
 	"#define TYG_SECTION(name) __attribute__((section(name)))\n"
 	"#define TYG_ASM_NAME(name) __asm__(TYG_STR(__USER_LABEL_PREFIX__) name)\n"
 	"#define TYG_ALTERNATE_NAME(c, name)\n"
@@ -91,7 +92,10 @@ static char const tg_c_prelude[] =
 	"#elif defined(_MSC_VER)\n"
 	"#define TYG_ALIGNED(n) __declspec(align(n))\n"
 	"#define TYG_THREAD __declspec(thread)\n"
-	"#define TYG_WEAK\n"
+	// no weak symbols; a weak function is one the front end keeps out of line, and noinline does that
+	"#define TYG_WEAK __declspec(noinline)\n"
+	// cl refuses a division whose divisor it has propagated to a constant (C2124): an identity call hides it
+	"#define TYG_NOFOLD(T, x) ((T)tyg_nofold((uint64_t)(x)))\n"
 	"#define TYG_SECTION(name)\n"
 	"#define TYG_ASM_NAME(name)\n"
 	"#define TYG_ALTERNATE_NAME(c, name) __pragma(comment(linker, \"/alternatename:\" #c \"=\" name))\n"
@@ -111,6 +115,7 @@ static char const tg_c_prelude[] =
 	"#define TYG_ALIGNED(n)\n"
 	"#define TYG_THREAD\n"
 	"#define TYG_WEAK\n"
+	"#define TYG_NOFOLD(T, x) ((T)(x))\n"
 	"#define TYG_SECTION(name)\n"
 	"#define TYG_ASM_NAME(name)\n"
 	"#define TYG_ALTERNATE_NAME(c, name)\n"
@@ -189,6 +194,9 @@ static char const tg_c_prelude[] =
 	// a function's address as an integer the compiler does not see through: gcc warns about a
 	// call through a cast of the function's own address to another function type
 	"static TYG_UNUSED uintptr_t tyg_fn_addr(uintptr_t a) { return a; }\n"
+	"#if defined(_MSC_VER)\n"
+	"static __inline uint64_t tyg_nofold(uint64_t x) { return x; }\n"
+	"#endif\n"
 	"#if defined(TYG_TARGET_WINDOWS)\n"
 	"typedef double TYG_F80;\n"
 	"#else\n"
@@ -2076,10 +2084,10 @@ TG_INTERNAL void tg_c_instr(tgProc *p, tgBytes *b, tgInstr const *in, i32 *line,
 			tg_c_printf(b, "v%u = (%s)((%s)%s %s (%s)%s);", d, T, W, A, op, W, B);
 		}
 		break;
-	case tgOp_UDiv: tg_c_printf(b, "v%u = (%s)(%s / %s);", d, T, A, B); break;
-	case tgOp_URem: tg_c_printf(b, "v%u = (%s)(%s %% %s);", d, T, A, B); break;
-	case tgOp_SDiv: tg_c_printf(b, "v%u = (%s)((%s)%s / (%s)%s);", d, T, S, A, S, B); break;
-	case tgOp_SRem: tg_c_printf(b, "v%u = (%s)((%s)%s %% (%s)%s);", d, T, S, A, S, B); break;
+	case tgOp_UDiv: tg_c_printf(b, "v%u = (%s)(%s / TYG_NOFOLD(uint64_t, %s));", d, T, A, B); break;
+	case tgOp_URem: tg_c_printf(b, "v%u = (%s)(%s %% TYG_NOFOLD(uint64_t, %s));", d, T, A, B); break;
+	case tgOp_SDiv: tg_c_printf(b, "v%u = (%s)((%s)%s / TYG_NOFOLD(%s, %s));", d, T, S, A, S, B); break;
+	case tgOp_SRem: tg_c_printf(b, "v%u = (%s)((%s)%s %% TYG_NOFOLD(%s, %s));", d, T, S, A, S, B); break;
 	case tgOp_Shl:  tg_c_printf(b, "v%u = (%s)((%s)%s << (%s & %u));", d, T, W, A, B, shift_mask); break;
 	case tgOp_LShr: tg_c_printf(b, "v%u = (%s)((%s)%s >> (%s & %u));", d, T, W, A, B, shift_mask); break;
 	case tgOp_AShr: tg_c_printf(b, "v%u = (%s)((%s)(%s)%s >> (%s & %u));", d, T, SW, S, A, B, shift_mask); break;
