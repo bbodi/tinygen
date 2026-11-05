@@ -113,6 +113,7 @@ fi
 run_native() {
 	t=$1
 	flags=$2
+	echo "linking and running smoke and abi for $t at -O0 and -O2"
 	for test in smoke abi; do
 		for o in -O0 -O2; do
 			bin="$out/$test-$t$o"
@@ -276,7 +277,7 @@ run_c_suite() {
 	done
 }
 if [ -f "$out/obj/smoke-c.c" ]; then
-	echo "checking smoke, abi and bench as C"
+	echo "compiling and running smoke, abi and bench from their C output at -O0 and -O2"
 	run_c_suite smoke test/smoke_main.c ""
 	run_c_suite abi test/abi_main.c -DTG_FAR_COUNT=2500 # see build_far in abi.c
 	run_c_suite bench "" ""
