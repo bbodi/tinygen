@@ -51,6 +51,7 @@ static char const tg_c_prelude[] =
 	"#define TYG_ALIGNED(n) __attribute__((aligned(n)))\n"
 	"#define TYG_THREAD __thread\n"
 	"#define TYG_WEAK __attribute__((weak))\n"
+	"#define TYG_WEAK_FUNC __attribute__((weak))\n"
 	"#define TYG_NOFOLD(T, x) ((T)(x))\n"
 	"#define TYG_SECTION(name) __attribute__((section(name)))\n"
 	"#define TYG_ASM_NAME(name) __asm__(TYG_STR(__USER_LABEL_PREFIX__) name)\n"
@@ -95,7 +96,8 @@ static char const tg_c_prelude[] =
 	"#define TYG_ALIGNED(n) __declspec(align(n))\n"
 	"#define TYG_THREAD __declspec(thread)\n"
 	// no weak symbols; a weak function is one the front end keeps out of line, and noinline does that
-	"#define TYG_WEAK __declspec(noinline)\n"
+	"#define TYG_WEAK\n"
+	"#define TYG_WEAK_FUNC __declspec(noinline)\n"
 	// cl refuses a division whose divisor it has propagated to a constant (C2124): an identity call hides it
 	"#define TYG_NOFOLD(T, x) ((T)tyg_nofold((uint64_t)(x)))\n"
 	"#define TYG_SECTION(name)\n"
@@ -118,6 +120,7 @@ static char const tg_c_prelude[] =
 	"#define TYG_ALIGNED(n)\n"
 	"#define TYG_THREAD\n"
 	"#define TYG_WEAK\n"
+	"#define TYG_WEAK_FUNC\n"
 	"#define TYG_NOFOLD(T, x) ((T)(x))\n"
 	"#define TYG_SECTION(name)\n"
 	"#define TYG_ASM_NAME(name)\n"
@@ -1039,7 +1042,7 @@ TG_INTERNAL char const *tg_c_storage(tgSymbol const *s, bool defined) {
 // kept like in an object, a static function is not warned about.
 TG_INTERNAL void tg_c_attrs(tgModule *m, tgBytes *b, i32 sym, char const *storage) {
 	tgSymbol const *s = &m->symbols.data[sym];
-	if (s->flags & tgSymbolFlag_Weak) tg_c_puts(b, "TYG_WEAK ");
+	if (s->flags & tgSymbolFlag_Weak) tg_c_puts(b, tg_c_is_func(m, sym) ? "TYG_WEAK_FUNC " : "TYG_WEAK ");
 	// the visibility the object writers give: on ELF hidden, then protected, win over
 	// export; Mach-O exports a hidden symbol; COFF exports definitions only
 	bool elf = m->target.os == TYG_OS_LINUX;
