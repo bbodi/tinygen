@@ -1243,6 +1243,29 @@ static void check_declared_errors(tyg_target t) {
 	tyg_module_free(e);
 }
 
+// A foreign symbol the C renames (sqrt, sin: math.h names) gets the same C name in every
+// module, whatever its index: MSVC binds the C name to the real one program-wide.
+static void check_stable_names(tyg_target t) {
+	if (t.output != TYG_OUTPUT_C) return;
+	static const char *const names[] = {"sqrt", "sin"};
+	for (int order = 0; order < 2; order++) {
+		tyg_module *e = tyg_module_new(t, "names.tg");
+		for (int i = 0; i < 2; i++) tyg_symbol(e, names[(i + order) % 2], TYG_SYM_FUNC | TYG_SYM_GLOBAL | TYG_SYM_FOREIGN);
+		const uint8_t *bytes;
+		size_t size;
+		if (tyg_module_emit(e, &bytes, &size) != 0) { fprintf(stderr, "cgen.c: emit names.tg: %s\n", tyg_error(e)); exit(1); }
+		char *c = malloc(size + 1);
+		memcpy(c, bytes, size);
+		c[size] = 0;
+		if (strstr(c, "TYG_ALTERNATE_NAME(tyg_s_sqrt, \"sqrt\")") == NULL || strstr(c, "TYG_ALTERNATE_NAME(tyg_s_sin, \"sin\")") == NULL) {
+			fprintf(stderr, "cgen.c: the C names of sqrt and sin depend on their order\n");
+			exit(1);
+		}
+		free(c);
+		tyg_module_free(e);
+	}
+}
+
 int main(int argc, char **argv) {
 	char const *out = argc > 1 ? argv[1] : "cgen-c.c";
 	char const *target = argc > 2 ? argv[2] : "c";
@@ -1288,6 +1311,7 @@ int main(int argc, char **argv) {
 	build_debug();
 	build_host();
 	check_declared_errors(t);
+	check_stable_names(t);
 	// arm64 Linux has no native long double yet; cgen_main.c checks none there
 	if (!(t.arch == TYG_ARCH_ARM64 && t.os == TYG_OS_LINUX && t.output == TYG_OUTPUT_OBJECT)) build_long_double();
 	check(tyg_module_write(m, out));

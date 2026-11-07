@@ -459,8 +459,11 @@ TG_INTERNAL bool tg_c_name_ok(tgString name) {
 	       !tg_c_in_list(stem, tg_c_reserved_math, tg_count_of(tg_c_reserved_math));
 }
 
-// The symbol's name in the C: its own, or tyg_s<index> with the real name as its asm label.
-// A debug type's typedef or enumerator took a name only no symbol had then.
+// The symbol's name in the C: its own, or one made from it with the real name as its asm
+// label. A debug type's typedef or enumerator took a name only no symbol had then.
+// The made name is a function of the real one, not of the symbol's index: MSVC binds it to
+// the real name with a linker directive, which reaches every file of the program, so the
+// files must agree on it.
 TG_INTERNAL tgString tg_c_sym_name(tgModule *m, i32 sym) {
 	if (m->c_names.count < m->symbols.count) tg_array_resize(&m->c_names, m->symbols.count);
 	tgString *name = &m->c_names.data[sym];
@@ -468,9 +471,18 @@ TG_INTERNAL tgString tg_c_sym_name(tgModule *m, i32 sym) {
 		*name = m->symbols.data[sym].name;
 		if (m->symbols.data[sym].flags & tgSymbolFlag_Declared) return *name; // checked by tyg_symbol
 		if (!tg_c_name_ok(*name) || tg_strmap_get(&m->c_dnames, *name) != NULL) {
-			char buf[32];
-			snprintf(buf, sizeof(buf), "tyg_s%d", sym);
-			*name = tg_module_string(m, tg_str(buf));
+			// tyg_s_ then the name, with _ doubled and any other non-alphanumeric as _XX
+			tgBytes b;
+			memset(&b, 0, sizeof(b));
+			tg_c_puts(&b, "tyg_s_");
+			for (isize i = 0; i < name->len; i++) {
+				u8 c = (u8)name->text[i];
+				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) tg_array_add(&b, c);
+				else if (c == '_') tg_c_puts(&b, "__");
+				else tg_c_printf(&b, "_%02x", c);
+			}
+			*name = tg_module_string(m, tg_str_make((char const *)b.data, b.count));
+			tg_array_free(&b);
 		}
 	}
 	return *name;
