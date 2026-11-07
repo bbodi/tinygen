@@ -47,6 +47,13 @@ static char const tg_c_prelude[] =
 	"#endif\n"
 	"#define TYG_STR2(x) #x\n"
 	"#define TYG_STR(x) TYG_STR2(x)\n"
+	"#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4\n"
+	"#define TYG_PTR_PAD(k) unsigned char tyg_pad##k[4];\n"
+	"#define TYG_PTR_PAD_INIT ,{0}\n"
+	"#else\n"
+	"#define TYG_PTR_PAD(k)\n"
+	"#define TYG_PTR_PAD_INIT\n"
+	"#endif\n"
 	"#if defined(__GNUC__) || defined(__clang__)\n"
 	"#define TYG_ALIGNED(n) __attribute__((aligned(n)))\n"
 	"#define TYG_THREAD __thread\n"
@@ -1204,12 +1211,14 @@ TG_INTERNAL bool tg_c_data_struct(tgModule *m, tgBytes *types, tgBytes *init, i3
 		char const *target = tg_c_sym_name(m, r->sym).text;
 		if (func && r->addend == 0) {
 			tg_c_printf(types, "\tvoid (*p%d)(void);\n", (int)k);
-			tg_c_printf(init, "\n\t(void (*)(void))&%s,", target);
+			tg_c_printf(init, "\n\t(void (*)(void))&%s TYG_PTR_PAD_INIT,", target);
 		} else {
 			tg_c_printf(types, "\tvoid *p%d;\n", (int)k);
-			if (r->addend == 0) tg_c_printf(init, "\n\t(void *)&%s,", target);
-			else tg_c_printf(init, "\n\t(void *)((char *)&%s + %lld),", target, (long long)r->addend);
+			if (r->addend == 0) tg_c_printf(init, "\n\t(void *)&%s TYG_PTR_PAD_INIT,", target);
+			else tg_c_printf(init, "\n\t(void *)((char *)&%s + %lld) TYG_PTR_PAD_INIT,", target, (long long)r->addend);
 		}
+		// a relocation fills 8 bytes; where a C pointer has 4, the rest of them stays zero
+		tg_c_printf(types, "\tTYG_PTR_PAD(%d)\n", (int)k);
 		at = next + 8;
 	}
 	init->count--; // the last comma
